@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    overscroll-behavior-y: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Respect Android display cutouts / status bar */
+  #root {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-medium
+      bg-neutral-800 text-neutral-100 active:bg-neutral-700 disabled:opacity-50
+      transition-colors;
+  }
+  .btn-primary {
+    @apply bg-indigo-600 active:bg-indigo-500;
+  }
+  .btn-ghost {
+    @apply bg-transparent active:bg-neutral-800;
+  }
+  .input {
+    @apply w-full rounded-xl bg-neutral-900 border border-neutral-800
+      px-3 py-2 text-sm text-neutral-100 placeholder-neutral-500
+      focus:border-indigo-500 focus:outline-none;
+  }
+  .card {
+    @apply rounded-2xl bg-neutral-900 border border-neutral-800 p-4;
+  }
+  .label {
+    @apply text-xs font-medium text-neutral-400 mb-1 block;
+  }
+}
+
+/* Minimal markdown styling */
+.md p { @apply mb-2 last:mb-0 leading-relaxed; }
+.md h1 { @apply text-lg font-semibold mb-2; }
+.md h2 { @apply text-base font-semibold mb-2; }
+.md h3 { @apply text-sm font-semibold mb-2; }
+.md ul { @apply list-disc pl-5 mb-2; }
+.md ol { @apply list-decimal pl-5 mb-2; }
+.md code {
+  @apply bg-neutral-800 px-1 py-0.5 rounded text-[0.85em];
+}
+.md pre {
+  @apply bg-neutral-950 border border-neutral-800 rounded-xl p-3 my-2 overflow-x-auto;
+}
+.md pre code { @apply bg-transparent p-0; }
+.md a { @apply text-indigo-400 underline; }
