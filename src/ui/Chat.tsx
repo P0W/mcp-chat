@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Chats, Mcps, Meta, Providers, uid } from "../db";
-import { runChat } from "../llm";
+import { runChat, type CompactInfo } from "../llm";
 import { callTool, connect, listLoadedTools } from "../mcp";
 import type {
   Chat as ChatT,
@@ -42,7 +42,9 @@ export default function Chat({
   const [history, setHistory] = useState<ChatT[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [compact, setCompact] = useState<CompactInfo | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -124,6 +126,9 @@ export default function Chat({
     setChat(next);
     setInput("");
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const working = [...next.messages];
       await runChat({
@@ -132,10 +137,12 @@ export default function Chat({
         messages: working,
         tools,
         runner: { call: callTool },
+        signal: controller.signal,
         onAssistant: (m) =>
           setChat((c) => (c ? { ...c, messages: [...c.messages, m] } : c)),
         onToolResult: (m) =>
           setChat((c) => (c ? { ...c, messages: [...c.messages, m] } : c)),
+        onCompact: setCompact,
       });
 
       setChat((c) => {
@@ -147,10 +154,16 @@ export default function Chat({
       });
       setHistory(await Chats.list());
     } catch (e) {
-      setError((e as Error).message);
+      const msg = (e as Error).message;
+      if (!controller.signal.aborted) setError(msg);
     } finally {
+      abortRef.current = null;
       setBusy(false);
     }
+  }
+
+  function stop() {
+    abortRef.current?.abort();
   }
 
   function startNewChat() {
@@ -158,6 +171,8 @@ export default function Chat({
     const c = newChat(chat?.providerId ?? providers[0].id);
     setChat(c);
     setShowHistory(false);
+    setCompact(null);
+    setError(null);
   }
 
   if (!hasProvider) {
@@ -178,12 +193,20 @@ export default function Chat({
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-4 py-2 border-b border-neutral-800">
         <button
-          className="btn-ghost text-sm text-neutral-300 truncate max-w-[60%]"
+          className="btn-ghost text-sm text-neutral-300 truncate max-w-[55%]"
           onClick={() => setShowHistory((s) => !s)}
         >
           {chat?.title ?? "New chat"}
         </button>
         <div className="flex items-center gap-2">
+          {compact && compact.elided > 0 && (
+            <span
+              className="text-[10px] text-neutral-500"
+              title={`Context auto-compacted: ${compact.origTokens.toLocaleString()} → ${compact.finalTokens.toLocaleString()} tokens, ${compact.elided} tool result${compact.elided === 1 ? "" : "s"} elided. Model can re-call tools for full data.`}
+            >
+              ctx {Math.round(compact.finalTokens / 1000)}k
+            </span>
+          )}
           {chat && providers.length > 1 && (
             <select
               className="bg-neutral-900 border border-neutral-800 rounded-lg text-xs px-2 py-1"
@@ -285,13 +308,19 @@ export default function Chat({
             className="input resize-none max-h-40"
             style={{ minHeight: "2.5rem" }}
           />
-          <button
-            className="btn btn-primary"
-            disabled={busy || !input.trim()}
-            onClick={() => void send()}
-          >
-            Send
-          </button>
+          {busy ? (
+            <button className="btn" onClick={stop} title="Stop">
+              Stop
+            </button>
+          ) : (
+            <button
+              className="btn btn-primary"
+              disabled={!input.trim()}
+              onClick={() => void send()}
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>

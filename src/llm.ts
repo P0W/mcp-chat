@@ -12,9 +12,24 @@ export interface RunOptions {
   runner: ToolRunner;
   onAssistant: (msg: ChatMessage) => void;
   onToolResult: (msg: ChatMessage) => void;
+  onCompact?: (info: CompactInfo) => void;
   maxIterations?: number;
+  contextBudgetTokens?: number;
   signal?: AbortSignal;
 }
+
+export interface CompactInfo {
+  origTokens: number;
+  finalTokens: number;
+  elided: number;
+}
+
+// Conservative default — fits Llama 4 Scout (32k), modest for everyone else.
+// Per-provider override later via provider.contextLimit if needed.
+const DEFAULT_BUDGET_TOKENS = 28_000;
+const CHARS_PER_TOKEN = 4;
+const ELIDABLE_MIN_BYTES = 500;
+const ELIDED_PREFIX = "[Elided tool result";
 
 const TOOL_NAME_RE = /[^a-zA-Z0-9_-]/g;
 
@@ -37,11 +52,23 @@ function uid() {
 
 export async function runChat(opts: RunOptions): Promise<void> {
   const max = opts.maxIterations ?? 8;
+  const budget = opts.contextBudgetTokens ?? DEFAULT_BUDGET_TOKENS;
+
   for (let i = 0; i < max; i++) {
+    // Compact prompt only if it would exceed budget. Protects the current
+    // turn (everything from the last user message onward) and only elides
+    // older tool results — replaced with a marker telling the model to
+    // re-call the tool if it needs that data. Originals stay in IndexedDB.
+    const baseline =
+      (opts.systemPrompt?.length ?? 0) + estimateToolDefsBytes(opts.tools);
+    const compact = compactMessages(opts.messages, baseline, budget);
+    if (compact.elided > 0 && opts.onCompact) opts.onCompact(compact);
+
+    const callOpts: RunOptions = { ...opts, messages: compact.messages };
     const result =
       opts.provider.protocol === "anthropic"
-        ? await callAnthropic(opts)
-        : await callOpenAI(opts);
+        ? await callAnthropic(callOpts)
+        : await callOpenAI(callOpts);
 
     opts.onAssistant(result.message);
     opts.messages.push(result.message);
@@ -251,6 +278,105 @@ async function callAnthropic(
 
 function trimSlash(u: string) {
   return u.replace(/\/+$/, "");
+}
+
+// ---------------- Token-aware history compaction ----------------
+
+function approxBytes(m: ChatMessage): number {
+  let size = m.content.length + 32;
+  if (m.toolCalls) {
+    for (const tc of m.toolCalls) {
+      size +=
+        (tc.id?.length ?? 0) +
+        tc.name.length +
+        JSON.stringify(tc.args ?? {}).length +
+        32;
+    }
+  }
+  return size;
+}
+
+function estimateToolDefsBytes(tools: McpTool[]): number {
+  let total = 0;
+  for (const t of tools) {
+    total +=
+      t.name.length +
+      (t.description?.length ?? 0) +
+      JSON.stringify(t.inputSchema ?? {}).length +
+      48;
+  }
+  return total;
+}
+
+interface CompactResult extends CompactInfo {
+  messages: ChatMessage[];
+}
+
+function compactMessages(
+  messages: ChatMessage[],
+  baselineBytes: number,
+  budgetTokens: number,
+): CompactResult {
+  const budgetBytes = budgetTokens * CHARS_PER_TOKEN - baselineBytes;
+  let totalBytes = 0;
+  for (const m of messages) totalBytes += approxBytes(m);
+  const origBytes = totalBytes;
+
+  const toTokens = (b: number) => Math.ceil(b / CHARS_PER_TOKEN);
+
+  if (totalBytes <= budgetBytes) {
+    return {
+      messages,
+      origTokens: toTokens(origBytes + baselineBytes),
+      finalTokens: toTokens(origBytes + baselineBytes),
+      elided: 0,
+    };
+  }
+
+  // Protect everything from the most recent user turn onwards.
+  let protectFrom = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      protectFrom = i;
+      break;
+    }
+  }
+
+  // Find elidable tool results (older than current turn, not already elided,
+  // and large enough to be worth the marker overhead).
+  const candidates: { idx: number; size: number }[] = [];
+  for (let i = 0; i < protectFrom; i++) {
+    const m = messages[i];
+    if (
+      m.role !== "tool" ||
+      m.content.length < ELIDABLE_MIN_BYTES ||
+      m.content.startsWith(ELIDED_PREFIX)
+    )
+      continue;
+    candidates.push({ idx: i, size: m.content.length });
+  }
+  candidates.sort((a, b) => b.size - a.size);
+
+  const out = messages.slice();
+  let elided = 0;
+  for (const c of candidates) {
+    if (totalBytes <= budgetBytes) break;
+    const orig = out[c.idx];
+    const toolBare = (orig.toolName ?? "tool").split("__").pop();
+    const marker =
+      `${ELIDED_PREFIX} from ${toolBare}: ${orig.content.length} chars omitted ` +
+      `to fit context. Re-call the tool if you need this data.]`;
+    totalBytes -= orig.content.length - marker.length;
+    out[c.idx] = { ...orig, content: marker };
+    elided++;
+  }
+
+  return {
+    messages: out,
+    origTokens: toTokens(origBytes + baselineBytes),
+    finalTokens: toTokens(totalBytes + baselineBytes),
+    elided,
+  };
 }
 
 // Auto-retry once on 429. Honors Retry-After header (seconds or HTTP date),
