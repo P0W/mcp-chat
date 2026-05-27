@@ -16,8 +16,10 @@ function isNative(): boolean {
 }
 
 // In dev (localhost browser), route MCP calls through Vite proxy so the
-// server's missing CORS headers don't block us. Native APK goes direct.
+// server's missing CORS headers don't block us. Production builds (APK and
+// PWA) NEVER use the proxy — vite strips `import.meta.env.DEV` to `false`.
 function effectiveUrl(url: string): string {
+  if (!import.meta.env.DEV) return url;
   if (isNative()) return url;
   if (
     typeof location !== "undefined" &&

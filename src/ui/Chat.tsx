@@ -34,6 +34,9 @@ export default function Chat({
   const [chat, setChat] = useState<ChatT | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [tools, setTools] = useState<McpTool[]>([]);
+  const [mcpErrors, setMcpErrors] = useState<{ name: string; msg: string }[]>(
+    [],
+  );
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<ChatT[]>([]);
@@ -65,6 +68,7 @@ export default function Chat({
   async function loadAllTools() {
     const servers = (await Mcps.list()).filter((s) => s.enabled);
     const all: McpTool[] = [];
+    const errs: { name: string; msg: string }[] = [];
     for (const s of servers) {
       try {
         const cached = listLoadedTools(s.id);
@@ -75,10 +79,13 @@ export default function Chat({
         const t = await connect(s);
         all.push(...t);
       } catch (e) {
+        const msg = (e as Error).message ?? String(e);
         console.warn(`MCP ${s.name} connect failed:`, e);
+        errs.push({ name: s.name, msg });
       }
     }
     setTools(all);
+    setMcpErrors(errs);
   }
 
   function newChat(providerId: string): ChatT {
@@ -214,6 +221,27 @@ export default function Chat({
             >
               {h.title}
             </button>
+          ))}
+        </div>
+      )}
+
+      {mcpErrors.length > 0 && (
+        <div className="px-3 pt-2 space-y-1">
+          {mcpErrors.map((e) => (
+            <div
+              key={e.name}
+              className="text-xs text-red-300 bg-red-950/40 border border-red-900/40 rounded-lg px-2 py-1.5 flex items-start justify-between gap-2"
+            >
+              <span className="break-words">
+                <span className="font-medium">{e.name}:</span> {e.msg}
+              </span>
+              <button
+                className="shrink-0 text-red-200 underline"
+                onClick={() => void loadAllTools()}
+              >
+                retry
+              </button>
+            </div>
           ))}
         </div>
       )}
