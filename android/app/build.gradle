@@ -4,6 +4,8 @@ android {
     namespace "dev.prashants.mcpchat"
     compileSdk rootProject.ext.compileSdkVersion
 
+    // Keep default at 2 so users on previously shipped v1 can install updates
+    // even when building outside CI without -PappVersionCode.
     def appVersionCode = (project.findProperty("appVersionCode") ?: "2").toInteger()
     def appVersionName = project.findProperty("appVersionName") ?: "1.0.1"
 
@@ -32,7 +34,13 @@ android {
                 keyAlias "androiddebugkey"
                 keyPassword "android"
             } else {
-                throw new GradleException("Missing android/debug.keystore. Generate one with keytool or restore committed debug.keystore.")
+                throw new GradleException(
+                    "Missing android/debug.keystore. Generate it with: " +
+                    "keytool -genkeypair -v -storetype JKS -keystore android/debug.keystore " +
+                    "-alias androiddebugkey -storepass android -keypass android " +
+                    "-keyalg RSA -keysize 2048 -validity 10000 " +
+                    "-dname \"CN=Android Debug,O=Android,C=US\""
+                )
             }
         }
     }
