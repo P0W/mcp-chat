@@ -64,6 +64,11 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
+            // Sign release builds with the same stable key as debug so a
+            // release APK is installable and can update an existing install
+            // in-place. Without a signingConfig, AGP produces an unsigned
+            // release APK that Android refuses to install ("App not installed").
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
