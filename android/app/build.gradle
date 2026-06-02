@@ -4,11 +4,17 @@ android {
     namespace "dev.prashants.mcpchat"
     compileSdk rootProject.ext.compileSdkVersion
 
-    def resolvedVersionCode = (
+    def rawVersionCode = (
         project.findProperty("appVersionCode")
             ?: System.getenv("APP_VERSION_CODE")
             ?: "1"
-    ).toInteger()
+    ).toString()
+    def resolvedVersionCode
+    try {
+        resolvedVersionCode = Integer.parseInt(rawVersionCode)
+    } catch (NumberFormatException ex) {
+        throw new GradleException("Invalid app version code '${rawVersionCode}'. Use a numeric value for appVersionCode/APP_VERSION_CODE.")
+    }
     def resolvedVersionName = (
         project.findProperty("appVersionName")
             ?: System.getenv("APP_VERSION_NAME")
