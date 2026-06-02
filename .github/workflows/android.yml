@@ -51,8 +51,8 @@ jobs:
       - name: Gradle assembleDebug
         working-directory: android
         env:
-          APP_VERSION_CODE: ${{ github.run_number }}
-          APP_VERSION_NAME: 1.0.${{ github.run_number }}
+          APP_VERSION_CODE: ${{ github.run_number * 100 + github.run_attempt }}
+          APP_VERSION_NAME: 1.0.${{ github.run_number }}.${{ github.run_attempt }}
         run: |
           chmod +x ./gradlew
           ./gradlew --no-daemon assembleDebug
