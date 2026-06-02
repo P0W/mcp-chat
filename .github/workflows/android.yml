@@ -55,10 +55,7 @@ jobs:
           APP_VERSION_NAME: 1.0.${{ github.run_number }}
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon \
-            -PappVersionCode=${APP_VERSION_CODE} \
-            -PappVersionName=${APP_VERSION_NAME} \
-            assembleDebug
+          ./gradlew --no-daemon assembleDebug
 
       - name: Rename APK
         run: |
