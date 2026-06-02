@@ -211,6 +211,7 @@ export default function Chat({
         style={{
           paddingTop: "env(safe-area-inset-top)",
           paddingBottom: "env(safe-area-inset-bottom)",
+          paddingLeft: "env(safe-area-inset-left)",
           pointerEvents: showHistory ? "auto" : "none",
         }}
       >
