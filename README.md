@@ -49,6 +49,30 @@ In Android Studio: Build > Build Bundle(s) / APK(s) > Build APK(s).
 - For local APK updates, set a higher version code explicitly, e.g.
   `cd android && ./gradlew -PappVersionCode=2 -PappVersionName=1.0.1 assembleDebug`.
 
+### Troubleshooting: "App not installed" / "something went wrong"
+
+If the installer shows an **Update** button but then fails with *App not
+installed*, the new APK and the installed app disagree on one of the three
+requirements above. The two common causes:
+
+- **Signature mismatch.** The copy you already have was signed with a
+  different key (for example an APK built locally with Android Studio's
+  auto-generated `~/.android/debug.keystore`, or an old build made before the
+  stable `android/debug.keystore` existed). Android never lets one key
+  overwrite an app signed by another. **Fix:** uninstall the existing MCP Chat
+  once, then install the new APK. This is a one-time step; every build signed
+  with the committed `android/debug.keystore` updates in-place afterwards.
+  Note that uninstalling clears the app's on-device data (chats, keys, MCP
+  configs), since everything lives in the app's storage.
+- **Downgrade.** The APK you are installing has a lower (or equal)
+  `versionCode` than the one already installed — for example downloading an
+  older CI run's artifact. **Fix:** install an APK from a newer build, or
+  uninstall first.
+
+Also make sure you are installing the `.apk` itself. GitHub Actions delivers
+the build artifact as a `.zip`; unzip it and install the `.apk` inside, or
+download the APK attached to a GitHub Release.
+
 ### OAuth deep link
 
 The app uses `mcpchat://oauth-callback` for OAuth redirects. After
