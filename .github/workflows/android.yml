@@ -51,6 +51,7 @@ jobs:
       - name: Gradle assembleDebug
         working-directory: android
         env:
+          # Keep run attempts ordered within a run while leaving room for retries.
           APP_VERSION_CODE: ${{ github.run_number * 100 + github.run_attempt }}
           APP_VERSION_NAME: 1.0.${{ github.run_number }}.${{ github.run_attempt }}
         run: |
