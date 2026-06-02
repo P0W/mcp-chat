@@ -36,6 +36,17 @@ npm run android      # opens Android Studio with the synced project
 
 In Android Studio: Build > Build Bundle(s) / APK(s) > Build APK(s).
 
+### APK update behavior
+
+- Android only installs an APK update when the new APK has:
+  - the same application ID,
+  - the same signing key,
+  - and a higher `versionCode`.
+- This repo expects a stable debug signing key at
+  `android/debug.keystore` (alias/password: `androiddebugkey`/`android`).
+- CI sets a monotonically increasing `versionCode` for each run so APK
+  updates can be installed in-place.
+
 ### OAuth deep link
 
 The app uses `mcpchat://oauth-callback` for OAuth redirects. After
