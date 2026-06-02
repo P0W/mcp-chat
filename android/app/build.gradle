@@ -20,6 +20,9 @@ android {
             ?: System.getenv("APP_VERSION_NAME")
             ?: "1.0.0"
     )
+    if (!(resolvedVersionName ==~ /\d+\.\d+\.\d+([.-].+)?/)) {
+        throw new GradleException("Invalid app version name '${resolvedVersionName}'. Use semantic version format like 1.0.1.")
+    }
 
     defaultConfig {
         applicationId "dev.prashants.mcpchat"
