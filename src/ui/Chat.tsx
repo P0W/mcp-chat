@@ -26,6 +26,7 @@ Formatting:
 - Be terse. One table or one short paragraph is enough.`;
 
 const isNative = () => Capacitor.isNativePlatform();
+const IS_NATIVE = isNative();
 
 export default function Chat({
   hasProvider,
@@ -222,6 +223,7 @@ export default function Chat({
             <button
               key={h.id}
               className="block w-full text-left px-4 py-2 text-sm hover:bg-neutral-900 truncate"
+              aria-label={`Open chat: ${h.title}`}
               onClick={() => {
                 setChat(h);
                 setShowHistory(false);
@@ -320,13 +322,13 @@ export default function Chat({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (isNative()) return;
+              if (IS_NATIVE) return;
               if (e.key === "Enter" && !e.shiftKey && !busy) {
                 e.preventDefault();
                 void send();
               }
             }}
-            enterKeyHint={isNative() ? "enter" : "send"}
+            enterKeyHint={IS_NATIVE ? "enter" : "send"}
             placeholder="Message..."
             rows={1}
             className="input resize-none max-h-40"
