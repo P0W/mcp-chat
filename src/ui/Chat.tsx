@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { Chats, Mcps, Meta, Providers, uid } from "../db";
 import { runChat, type CompactInfo } from "../llm";
 import { callTool, connect, listLoadedTools } from "../mcp";
@@ -23,6 +24,8 @@ Formatting:
 - No trailing "please note..." disclaimers, no caveats about subsets unless the data is actually truncated.
 - No step-by-step calculation explanations unless explicitly asked.
 - Be terse. One table or one short paragraph is enough.`;
+
+const isNative = () => Capacitor.isNativePlatform();
 
 export default function Chat({
   hasProvider,
@@ -191,6 +194,45 @@ export default function Chat({
 
   return (
     <div className="flex h-full flex-col">
+      {showHistory && (
+        <button
+          className="fixed inset-0 z-40 bg-black/50"
+          aria-label="Close chat history"
+          onClick={() => setShowHistory(false)}
+        />
+      )}
+
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex w-80 max-w-[85vw] flex-col border-r border-neutral-800 bg-neutral-950 transition-transform duration-200 ${
+          showHistory ? "translate-x-0" : "-translate-x-full"
+        }`}
+        style={{
+          paddingTop: "env(safe-area-inset-top)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+      >
+        <div className="border-b border-neutral-800 px-4 py-3 text-sm font-medium">
+          Chat history
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {history.length === 0 && (
+            <div className="p-3 text-sm text-neutral-500">No past chats</div>
+          )}
+          {history.map((h) => (
+            <button
+              key={h.id}
+              className="block w-full text-left px-4 py-2 text-sm hover:bg-neutral-900 truncate"
+              onClick={() => {
+                setChat(h);
+                setShowHistory(false);
+              }}
+            >
+              {h.title}
+            </button>
+          ))}
+        </div>
+      </aside>
+
       <div className="flex items-center justify-between px-4 py-2 border-b border-neutral-800">
         <button
           className="btn-ghost text-sm text-neutral-300 truncate max-w-[55%]"
@@ -227,26 +269,6 @@ export default function Chat({
           </button>
         </div>
       </div>
-
-      {showHistory && (
-        <div className="border-b border-neutral-800 max-h-60 overflow-y-auto bg-neutral-950">
-          {history.length === 0 && (
-            <div className="p-3 text-sm text-neutral-500">No past chats</div>
-          )}
-          {history.map((h) => (
-            <button
-              key={h.id}
-              className="block w-full text-left px-4 py-2 text-sm hover:bg-neutral-900 truncate"
-              onClick={() => {
-                setChat(h);
-                setShowHistory(false);
-              }}
-            >
-              {h.title}
-            </button>
-          ))}
-        </div>
-      )}
 
       {mcpErrors.length > 0 && (
         <div className="px-3 pt-2 space-y-1">
@@ -298,11 +320,13 @@ export default function Chat({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
+              if (isNative()) return;
               if (e.key === "Enter" && !e.shiftKey && !busy) {
                 e.preventDefault();
                 void send();
               }
             }}
+            enterKeyHint={isNative() ? "enter" : "send"}
             placeholder="Message..."
             rows={1}
             className="input resize-none max-h-40"
