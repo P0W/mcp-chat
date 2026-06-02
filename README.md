@@ -46,6 +46,8 @@ In Android Studio: Build > Build Bundle(s) / APK(s) > Build APK(s).
   `android/debug.keystore` (alias/password: `androiddebugkey`/`android`).
 - CI sets a monotonically increasing `versionCode` for each run so APK
   updates can be installed in-place.
+- For local APK updates, set a higher version code explicitly, e.g.
+  `./gradlew -PappVersionCode=2 -PappVersionName=1.0.1 assembleDebug`.
 
 ### OAuth deep link
 
