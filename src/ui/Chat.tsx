@@ -207,9 +207,11 @@ export default function Chat({
         className={`fixed inset-y-0 left-0 z-50 flex w-80 max-w-[85vw] flex-col border-r border-neutral-800 bg-neutral-950 transition-transform duration-200 ${
           showHistory ? "translate-x-0" : "-translate-x-full"
         }`}
+        aria-hidden={!showHistory}
         style={{
           paddingTop: "env(safe-area-inset-top)",
           paddingBottom: "env(safe-area-inset-bottom)",
+          pointerEvents: showHistory ? "auto" : "none",
         }}
       >
         <div className="border-b border-neutral-800 px-4 py-3 text-sm font-medium">
@@ -224,6 +226,7 @@ export default function Chat({
               key={h.id}
               className="block w-full text-left px-4 py-2 text-sm hover:bg-neutral-900 truncate"
               aria-label={`Open chat: ${h.title}`}
+              disabled={!showHistory}
               onClick={() => {
                 setChat(h);
                 setShowHistory(false);
