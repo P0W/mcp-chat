@@ -4,10 +4,16 @@ android {
     namespace "dev.prashants.mcpchat"
     compileSdk rootProject.ext.compileSdkVersion
 
-    // Keep default at 2 so users on previously shipped v1 can install updates
-    // even when building outside CI without -PappVersionCode.
-    def resolvedVersionCode = (project.findProperty("appVersionCode") ?: "2").toInteger()
-    def resolvedVersionName = project.findProperty("appVersionName") ?: "1.0.1"
+    def resolvedVersionCode = (
+        project.findProperty("appVersionCode")
+            ?: System.getenv("APP_VERSION_CODE")
+            ?: "1"
+    ).toInteger()
+    def resolvedVersionName = (
+        project.findProperty("appVersionName")
+            ?: System.getenv("APP_VERSION_NAME")
+            ?: "1.0.0"
+    )
 
     defaultConfig {
         applicationId "dev.prashants.mcpchat"
