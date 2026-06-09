@@ -289,6 +289,7 @@ export default function Chat({
     queuedRef.current = [];
     setQueuedMessages([]);
     abortRef.current?.abort();
+    setBusy(false);
   }
 
   function startNewChat() {
