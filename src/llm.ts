@@ -32,10 +32,21 @@ const ELIDABLE_MIN_BYTES = 500;
 const ELIDED_PREFIX = "[Elided tool result";
 
 const TOOL_NAME_RE = /[^a-zA-Z0-9_-]/g;
+const TOOL_KEY_MAX = 64;
+const TOOL_KEY_DISCRIMINATOR = 8;
 
+// Key tools by a stable, sanitized serverId discriminator (not the mutable
+// display name) so tools from different servers can never collide — even when
+// two servers share a name or expose an identically named tool. The readable
+// tool name stays first; the short serverId suffix guarantees uniqueness.
 function toolKey(t: McpTool): string {
-  const safe = `${t.serverName}__${t.name}`.replace(TOOL_NAME_RE, "_");
-  return safe.slice(0, 64);
+  const disc = t.serverId
+    .replace(TOOL_NAME_RE, "_")
+    .slice(0, TOOL_KEY_DISCRIMINATOR);
+  const name = t.name
+    .replace(TOOL_NAME_RE, "_")
+    .slice(0, TOOL_KEY_MAX - disc.length - 2);
+  return `${name}__${disc}`;
 }
 
 function parseToolKey(
