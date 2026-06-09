@@ -42,6 +42,7 @@ type InitSqlJs = (config: { locateFile: () => string }) => Promise<SqlJsStatic>;
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
 const databases = new Map<string, SqlDatabase>();
 const pendingDatabases = new Map<string, Promise<SqlDatabase>>();
+const dbLocks = new Map<string, Promise<void>>();
 
 function schema(properties: object, required: string[]): object {
   return { type: "object", properties, required };
@@ -148,6 +149,27 @@ async function getDb(name: string): Promise<SqlDatabase> {
     return await created;
   } finally {
     pendingDatabases.delete(name);
+  }
+}
+
+async function withDbLock<T>(name: string, action: () => Promise<T>): Promise<T> {
+  const previous = dbLocks.get(name) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(action);
+  const cleanup = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  dbLocks.set(name, cleanup);
+  try {
+    return await run;
+  } finally {
+    if (dbLocks.get(name) === cleanup) dbLocks.delete(name);
+  }
+}
+
+async function waitForDbLocks(): Promise<void> {
+  while (dbLocks.size) {
+    await Promise.all([...dbLocks.values()].map((lock) => lock.catch(() => undefined)));
   }
 }
 
@@ -281,7 +303,7 @@ function parseCsv(data: string): string[][] {
   }
   if (quoted)
     throw new Error(
-      `CSV contains an unterminated quoted field starting at line ${quoteLine}, column ${quoteColumn}`,
+      `CSV contains an unterminated quoted field (opened with " at line ${quoteLine}, column ${quoteColumn})`,
     );
   if (cell.length || row.length) {
     row.push(cell.replace(/\r$/, ""));
@@ -444,6 +466,21 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
+function exportBase64(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{")) return trimmed;
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "base64" in parsed &&
+    typeof parsed.base64 === "string"
+  ) {
+    return parsed.base64;
+  }
+  throw new Error("Database import JSON must contain a string base64 field");
+}
+
 export function createSessionSqlTools(): ToolDef[] {
   return [
     {
@@ -467,22 +504,24 @@ export function createSessionSqlTools(): ToolDef[] {
       async handler(args) {
         const name = dbName(args);
         const sql = nonEmptyString(args, "sql");
-        const db = await getDb(name);
-        const before = db.exec("SELECT total_changes() AS changes")[0]?.values[0]?.[0] ?? 0;
-        const results = db.exec(sql, sqlParams(args));
-        const after = db.exec("SELECT total_changes() AS changes")[0]?.values[0]?.[0] ?? before;
-        const maxRows = normalizeLimit(args);
-        return serialize({
-          db: name,
-          changed_database: hasWrites(sql),
-          rows_modified: Number(after) - Number(before),
-          result_sets: results.map((result) => ({
-            columns: result.columns,
-            rows: resultRows(result, maxRows),
-            returned_rows: Math.min(result.values.length, maxRows),
-            total_rows: result.values.length,
-            truncated: result.values.length > maxRows,
-          })),
+        return withDbLock(name, async () => {
+          const db = await getDb(name);
+          const before = db.exec("SELECT total_changes() AS changes")[0]?.values[0]?.[0] ?? 0;
+          const results = db.exec(sql, sqlParams(args));
+          const after = db.exec("SELECT total_changes() AS changes")[0]?.values[0]?.[0] ?? before;
+          const maxRows = normalizeLimit(args);
+          return serialize({
+            db: name,
+            changed_database: hasWrites(sql),
+            rows_modified: Number(after) - Number(before),
+            result_sets: results.map((result) => ({
+              columns: result.columns,
+              rows: resultRows(result, maxRows),
+              returned_rows: Math.min(result.values.length, maxRows),
+              total_rows: result.values.length,
+              truncated: result.values.length > maxRows,
+            })),
+          });
         });
       },
     },
@@ -525,14 +564,16 @@ export function createSessionSqlTools(): ToolDef[] {
         const parsed = parseRows(data, kind);
         if (parsed.rows.length > MAX_IMPORT_ROWS)
           throw new Error(`Import has ${parsed.rows.length} rows; limit is ${MAX_IMPORT_ROWS}`);
-        const db = await getDb(name);
-        importRows(db, table, parsed.columns, parsed.rows, args.replace === true);
-        return serialize({
-          db: name,
-          table,
-          kind,
-          columns: parsed.columns,
-          imported_rows: parsed.rows.length,
+        return withDbLock(name, async () => {
+          const db = await getDb(name);
+          importRows(db, table, parsed.columns, parsed.rows, args.replace === true);
+          return serialize({
+            db: name,
+            table,
+            kind,
+            columns: parsed.columns,
+            imported_rows: parsed.rows.length,
+          });
         });
       },
     },
@@ -545,34 +586,36 @@ export function createSessionSqlTools(): ToolDef[] {
       ),
       async handler(args) {
         const name = dbName(args);
-        const db = await getDb(name);
-        const tables = db
-          .exec(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-          )[0]
-          ?.values.map((row) => String(row[0])) ?? [];
-        return serialize({
-          db: name,
-          tables: tables.map((table) => ({
-            name: table,
-            columns:
-              db.exec(`PRAGMA table_info(${quoteIdentifier(table)})`)[0]?.values.map(
-                ([
-                  _columnId,
-                  columnName,
-                  columnType,
-                  notNull,
-                  defaultValue,
-                  primaryKey,
-                ]) => ({
-                  name: columnName,
-                  type: columnType,
-                  not_null: notNull,
-                  default_value: defaultValue,
-                  primary_key: primaryKey,
-                }),
-              ) ?? [],
-          })),
+        return withDbLock(name, async () => {
+          const db = await getDb(name);
+          const tables = db
+            .exec(
+              "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )[0]
+            ?.values.map((row) => String(row[0])) ?? [];
+          return serialize({
+            db: name,
+            tables: tables.map((table) => ({
+              name: table,
+              columns:
+                db.exec(`PRAGMA table_info(${quoteIdentifier(table)})`)[0]?.values.map(
+                  ([
+                    _columnId,
+                    columnName,
+                    columnType,
+                    notNull,
+                    defaultValue,
+                    primaryKey,
+                  ]) => ({
+                    name: columnName,
+                    type: columnType,
+                    not_null: notNull,
+                    default_value: defaultValue,
+                    primary_key: primaryKey,
+                  }),
+                ) ?? [],
+            })),
+          });
         });
       },
     },
@@ -586,13 +629,15 @@ export function createSessionSqlTools(): ToolDef[] {
       ),
       async handler(args) {
         const name = dbName(args);
-        const db = await getDb(name);
-        const bytes = db.export();
-        if (bytes.length > MAX_DB_EXPORT_BYTES)
-          throw new Error(
-            `Database export is ${bytes.length} bytes; inline export limit is ${MAX_DB_EXPORT_BYTES} bytes`,
-          );
-        return JSON.stringify({ db: name, bytes: bytes.length, base64: bytesToBase64(bytes) });
+        return withDbLock(name, async () => {
+          const db = await getDb(name);
+          const bytes = db.export();
+          if (bytes.length > MAX_DB_EXPORT_BYTES)
+            throw new Error(
+              `Database export size (${bytes.length} bytes) exceeds maximum limit of ${MAX_DB_EXPORT_BYTES} bytes`,
+            );
+          return JSON.stringify({ db: name, bytes: bytes.length, base64: bytesToBase64(bytes) });
+        });
       },
     },
     {
@@ -602,7 +647,11 @@ export function createSessionSqlTools(): ToolDef[] {
       inputSchema: schema(
         {
           db: { type: "string", description: "Session database name. Defaults to default." },
-          base64: { type: "string", description: "Base64 database bytes from sql_export_db." },
+          base64: {
+            type: "string",
+            description:
+              "Raw base64 database bytes or the JSON object returned by sql_export_db.",
+          },
           replace: {
             type: "boolean",
             description:
@@ -613,15 +662,19 @@ export function createSessionSqlTools(): ToolDef[] {
       ),
       async handler(args) {
         const name = dbName(args);
-        const replace = args.replace === true;
-        if (!replace && (databases.has(name) || pendingDatabases.has(name)))
-          throw new Error(`Database "${name}" already exists or is being created`);
-        const SQL = await sqlJs();
-        const previous = databases.get(name);
-        const next = new SQL.Database(base64ToBytes(nonEmptyString(args, "base64")));
-        previous?.close();
-        databases.set(name, next);
-        return `Loaded database "${name}".`;
+        return withDbLock(name, async () => {
+          const replace = args.replace === true;
+          if (!replace && (databases.has(name) || pendingDatabases.has(name)))
+            throw new Error(`Database "${name}" already exists or is being created`);
+          const SQL = await sqlJs();
+          const previous = databases.get(name);
+          const next = new SQL.Database(
+            base64ToBytes(exportBase64(nonEmptyString(args, "base64"))),
+          );
+          previous?.close();
+          databases.set(name, next);
+          return `Loaded database "${name}".`;
+        });
       },
     },
     {
@@ -637,17 +690,20 @@ export function createSessionSqlTools(): ToolDef[] {
       ),
       async handler(args) {
         if (args.all === true) {
+          await waitForDbLocks();
           for (const db of databases.values()) db.close();
           const count = databases.size;
           databases.clear();
           return `Dropped ${count} session database${count === 1 ? "" : "s"}.`;
         }
         const name = dbName(args);
-        const stored = databases.get(name);
-        if (!stored) return `Database "${name}" did not exist.`;
-        stored.close();
-        databases.delete(name);
-        return `Dropped database "${name}".`;
+        return withDbLock(name, async () => {
+          const stored = databases.get(name);
+          if (!stored) return `Database "${name}" did not exist.`;
+          stored.close();
+          databases.delete(name);
+          return `Dropped database "${name}".`;
+        });
       },
     },
   ];

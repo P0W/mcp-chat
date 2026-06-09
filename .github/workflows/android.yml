@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build release APK
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -48,25 +48,25 @@ jobs:
       - name: Capacitor sync
         run: npx cap sync android
 
-      - name: Gradle assembleDebug
+      - name: Gradle assembleRelease
         working-directory: android
         run: |
           chmod +x ./gradlew
           # Keep run attempts ordered within a run while leaving room for retries.
           export APP_VERSION_CODE=$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))
-          export APP_VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
-          ./gradlew --no-daemon assembleDebug
+          export APP_VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          ./gradlew --no-daemon assembleRelease
 
       - name: Rename APK
         run: |
           mkdir -p artifacts
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-             artifacts/mcp-chat-debug-${{ github.sha }}.apk
+          cp android/app/build/outputs/apk/release/app-release.apk \
+             artifacts/mcp-chat-release-${{ github.sha }}.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-chat-debug-apk
+          name: mcp-chat-release-apk
           path: artifacts/*.apk
           retention-days: 30
 
