@@ -2,6 +2,11 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { Readable } from "node:stream";
 
+const APP_VERSION = process.env.npm_package_version ?? "0.0.0";
+const BUILD_NUMBER =
+  process.env.BUILD_NUMBER ?? process.env.GITHUB_RUN_NUMBER ?? "local";
+const BUILD_TIME = new Date().toISOString();
+
 // Dev-only proxy that lets the app reach MCP servers that don't allow browser
 // origins. Usage: client prepends `/mcp-proxy/<full-target-url>` only when
 // running on localhost. In the Capacitor APK requests go direct.
@@ -58,4 +63,9 @@ export default defineConfig({
   plugins: [react(), mcpProxy],
   server: { host: true, port: 5173 },
   build: { outDir: "dist", target: "es2020" },
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+    __BUILD_NUMBER__: JSON.stringify(BUILD_NUMBER),
+    __BUILD_TIME__: JSON.stringify(BUILD_TIME),
+  },
 });

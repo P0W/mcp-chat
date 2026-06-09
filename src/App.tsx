@@ -3,8 +3,9 @@ import { Providers as ProvidersDb } from "./db";
 import Chat from "./ui/Chat";
 import Providers from "./ui/Providers";
 import McpServers from "./ui/McpServers";
+import About from "./ui/About";
 
-type View = "chat" | "providers" | "mcps";
+type View = "chat" | "providers" | "mcps" | "about";
 
 export default function App() {
   const [view, setView] = useState<View>("chat");
@@ -30,6 +31,7 @@ export default function App() {
           <Providers onChange={() => setHasProvider(true)} />
         )}
         {view === "mcps" && <McpServers />}
+        {view === "about" && <About />}
       </div>
     </div>
   );
@@ -46,6 +48,7 @@ function Tabs({
     { id: "chat", label: "Chat" },
     { id: "providers", label: "Providers" },
     { id: "mcps", label: "MCP" },
+    { id: "about", label: "About" },
   ];
   return (
     <div className="flex border-b border-neutral-800 bg-neutral-950/95 backdrop-blur sticky top-0 z-10">
