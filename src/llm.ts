@@ -232,10 +232,11 @@ async function callChatCompletionsProtocol(
 
   if (!res.ok) throw new Error(`LLM ${res.status}: ${await res.text()}`);
   const json = await res.json();
-  const choice = json.choices?.[0]?.message;
-  if (!choice) throw new Error("No choice in response");
+  const choice = json.choices?.[0];
+  const choiceMessage = choice?.message;
+  if (!choiceMessage) throw new Error("No choice in response");
 
-  const toolCalls: ToolCall[] | undefined = choice.tool_calls?.map((tc: {
+  const toolCalls: ToolCall[] | undefined = choiceMessage.tool_calls?.map((tc: {
     id: string;
     function: { name: string; arguments: string };
   }) => ({
@@ -247,7 +248,10 @@ async function callChatCompletionsProtocol(
   const message: ChatMessage = {
     id: uid(),
     role: "assistant",
-    content: choice.content ?? "",
+    content: outputWithTruncationNotice(
+      choiceMessage.content ?? "",
+      choice.finish_reason === "length",
+    ),
     createdAt: Date.now(),
     ...(toolCalls?.length ? { toolCalls } : {}),
   };
@@ -321,10 +325,7 @@ async function callMessagesApiProtocol(
     else if (block.type === "tool_use")
       toolCalls.push({ id: block.id, name: block.name, args: block.input });
   }
-  if (json.stop_reason === "max_tokens") {
-    text +=
-      "\n\n[Response stopped at the provider output limit. Ask to continue if you need the rest.]";
-  }
+  text = outputWithTruncationNotice(text, json.stop_reason === "max_tokens");
 
   const message: ChatMessage = {
     id: uid(),
@@ -338,6 +339,11 @@ async function callMessagesApiProtocol(
 
 function trimSlash(u: string) {
   return u.replace(/\/+$/, "");
+}
+
+function outputWithTruncationNotice(content: string, truncated: boolean): string {
+  if (!truncated) return content;
+  return `${content}\n\n[Response stopped at the provider output limit. Ask to continue if you need the rest.]`;
 }
 
 // ---------------- Token-aware history compaction ----------------
