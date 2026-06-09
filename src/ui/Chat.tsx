@@ -35,7 +35,7 @@ Formatting:
 
 const isNative = () => Capacitor.isNativePlatform();
 const IS_NATIVE = isNative();
-const DATA_SHAPING_QUERY =
+const DATA_SHAPING_PATTERN =
   /\b(filter|group(?:\s+by)?|sort|order(?:\s+by)?|rank|top|bottom|aggregate|sum|avg|count|join|table|rows|csv|json|markdown|summari[sz]e|analy[sz]e|compare)\b/i;
 
 // Route a tool call to the local built-in tools or the matching MCP server.
@@ -54,14 +54,21 @@ const runToolCall = (
 function toolRoutingHint(messages: ChatMessage[], tools: McpTool[]): string {
   const hasSql = tools.some((t) => t.serverId === SQL_SERVER_ID);
   if (!hasSql) return "";
-  const latestUser = [...messages].reverse().find((m) => m.role === "user");
-  if (!latestUser || !DATA_SHAPING_QUERY.test(latestUser.content)) return "";
+  let latestUser: ChatMessage | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === "user") {
+      latestUser = message;
+      break;
+    }
+  }
+  if (!latestUser || !DATA_SHAPING_PATTERN.test(latestUser.content)) return "";
   return `
 
 Routing hint for this turn:
 - This request looks like data shaping; prefer Session SQLite tools first.
 - Import source data to SQLite and run SQL for filtering, joins, grouping, sorting, and summaries.
-- Do not ask the user to request SQL explicitly when it improves accuracy.`;
+- Do not ask the user to request SQL explicitly when using SQL improves accuracy.`;
 }
 
 export default function Chat({
