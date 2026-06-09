@@ -1,20 +1,15 @@
-import { Files, Meta, type CrudStore } from "./db";
-import type { StoredFile } from "./types";
+import {
+  Directory,
+  Encoding,
+  Filesystem,
+  type FileInfo,
+} from "@capacitor/filesystem";
 import { createToolRegistry, type ToolDef } from "./toolRegistry";
-
-// Built-in file CRUD backed by local storage, surfaced to the LLM through the
-// generic tool registry. Handlers depend only on the injected `FileToolsDeps`,
-// so this factory is reusable with any backend that satisfies the interfaces
-// (IndexedDB here, but equally an in-memory map or a remote API elsewhere).
 
 export const LOCAL_SERVER_ID = "local";
 const LOCAL_SERVER_NAME = "Local Files";
-
-// App files live under a working directory by default. It is created lazily —
-// only the first file operation persists it — and callers may still reach
-// other locations via absolute paths.
-const WORKING_DIR_KEY = "workingDir";
-const DEFAULT_WORKING_DIR = "/workspace";
+const ROOT_DIR = "MCP Chat";
+const DEFAULT_WORKING_DIR = "workspace";
 
 type Args = Record<string, unknown>;
 
@@ -41,11 +36,6 @@ function optionalString(args: Args, key: string): string {
   return v;
 }
 
-// ---- path handling ------------------------------------------------------
-
-// POSIX-style normalization: collapses duplicate slashes, resolves "." and
-// ".." segments, and never lets ".." escape above root. Returns "/" for an
-// empty absolute path and "." for an empty relative one.
 function normalizePath(path: string): string {
   const absolute = path.startsWith("/");
   const out: string[] = [];
@@ -62,20 +52,115 @@ function normalizePath(path: string): string {
   return absolute ? `/${joined}` : joined || ".";
 }
 
-// Relative names resolve under the working directory; absolute names (starting
-// with "/") are honored as-is, so the model can reach other locations.
-function resolvePath(workingDir: string, name: string): string {
-  return normalizePath(name.startsWith("/") ? name : `${workingDir}/${name}`);
+function ensureInsideRoot(path: string): string {
+  const rel = path.startsWith("/") ? path.slice(1) : path;
+  if (
+    rel.length === 0 ||
+    rel === "." ||
+    rel === ".." ||
+    rel.startsWith("../")
+  ) {
+    throw new Error("Path must point inside storage root");
+  }
+  return rel;
 }
 
-// ---- schema fragments (declared once, reused per tool) ------------------
+function resolvePath(name: string): string {
+  const normalized = normalizePath(
+    name.startsWith("/") ? name : `${DEFAULT_WORKING_DIR}/${name}`,
+  );
+  return ensureInsideRoot(normalized);
+}
+
+function resolveDir(path?: string): string {
+  if (!path) return DEFAULT_WORKING_DIR;
+  const normalized = normalizePath(
+    path.startsWith("/") ? path : `${DEFAULT_WORKING_DIR}/${path}`,
+  );
+  return ensureInsideRoot(normalized);
+}
+
+function storagePath(relPath: string): string {
+  return `${ROOT_DIR}/${relPath}`;
+}
+
+function asDisplayPath(relPath: string): string {
+  return `/${relPath}`;
+}
+
+function isNotFoundError(error: unknown): boolean {
+  const msg = (error as Error)?.message?.toLowerCase?.() ?? "";
+  return (
+    msg.includes("not found") ||
+    msg.includes("does not exist") ||
+    msg.includes("no such file")
+  );
+}
+
+async function statOrNull(relPath: string) {
+  try {
+    return await Filesystem.stat({
+      path: storagePath(relPath),
+      directory: Directory.Documents,
+    });
+  } catch (e) {
+    if (isNotFoundError(e)) return null;
+    throw e;
+  }
+}
+
+function joinPath(base: string, name: string): string {
+  return base.length ? `${base}/${name}` : name;
+}
+
+function summarize(path: string, f: FileInfo): string {
+  return `${asDisplayPath(path)} (${f.size} bytes)`;
+}
+
+async function listFilesRecursive(dirRelPath: string): Promise<FileInfo[]> {
+  const out: FileInfo[] = [];
+  const stack: string[] = [dirRelPath];
+  while (stack.length) {
+    const current = stack.pop()!;
+    let entries: FileInfo[];
+    try {
+      entries = (
+        await Filesystem.readdir({
+          path: storagePath(current),
+          directory: Directory.Documents,
+        })
+      ).files;
+    } catch (e) {
+      if (isNotFoundError(e) && current === dirRelPath) return [];
+      if (isNotFoundError(e)) continue;
+      throw e;
+    }
+    for (const item of entries) {
+      const rel = joinPath(current, item.name);
+      if (item.type === "directory") stack.push(rel);
+      else out.push({ ...item, name: rel });
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function readUtf8File(relPath: string): Promise<string> {
+  const data = (
+    await Filesystem.readFile({
+      path: storagePath(relPath),
+      directory: Directory.Documents,
+      encoding: Encoding.UTF8,
+    })
+  ).data;
+  return typeof data === "string" ? data : await data.text();
+}
 
 const NAME_PROP = {
   name: {
     type: "string",
     description:
-      "File path. Relative paths resolve under the working directory; " +
-      "absolute paths (starting with '/') are used as-is.",
+      "File path. Relative paths resolve under /workspace; absolute paths " +
+      "(starting with '/') are resolved under / in app Documents storage.",
   },
 } as const;
 const CONTENT_PROP = {
@@ -85,8 +170,8 @@ const PATH_PROP = {
   path: {
     type: "string",
     description:
-      "Directory to list; defaults to the working directory. Relative " +
-      "paths resolve under the working directory.",
+      "Directory to list. Defaults to /workspace. Relative paths resolve " +
+      "under /workspace.",
   },
 } as const;
 
@@ -94,126 +179,93 @@ function schema(properties: object, required: string[]): object {
   return { type: "object", properties, required };
 }
 
-function summarize(f: StoredFile): string {
-  return `${f.name} (${f.content.length} chars)`;
-}
-
-// ---- dependencies (injected for reuse) ----------------------------------
-
-export interface FileToolsDeps {
-  store: CrudStore<StoredFile>;
-  /** Lazily resolve (and persist on first use) the default working directory. */
-  resolveWorkingDir: () => Promise<string>;
-}
-
-export function createFileTools(deps: FileToolsDeps): ToolDef[] {
-  const { store, resolveWorkingDir } = deps;
-
+export function createFileTools(): ToolDef[] {
   return [
     {
       name: "create_file",
       description:
-        "Create a new local file. Fails if a file with the same path already exists.",
+        "Create a new file in phone Documents storage. Fails if file exists.",
       inputSchema: schema({ ...NAME_PROP, ...CONTENT_PROP }, ["name"]),
       async handler(args) {
-        const path = resolvePath(
-          await resolveWorkingDir(),
-          nonEmptyString(args, "name"),
-        );
+        const path = resolvePath(nonEmptyString(args, "name"));
         const content = optionalString(args, "content");
-        const now = Date.now();
-        try {
-          await store.add({ name: path, content, createdAt: now, updatedAt: now });
-        } catch (e) {
-          if (e instanceof DOMException && e.name === "ConstraintError")
-            throw new Error(`File "${path}" already exists`);
-          throw e;
-        }
-        return `Created ${path} (${content.length} chars).`;
+        if (await statOrNull(path)) throw new Error(`File "${asDisplayPath(path)}" already exists`);
+        const result = await Filesystem.writeFile({
+          path: storagePath(path),
+          directory: Directory.Documents,
+          data: content,
+          encoding: Encoding.UTF8,
+          recursive: true,
+        });
+        return `Created ${asDisplayPath(path)} (${content.length} chars).\nDevice URI: ${result.uri}`;
       },
     },
     {
       name: "read_file",
-      description: "Read the full contents of a local file by path.",
+      description: "Read the full contents of a file from phone Documents storage.",
       inputSchema: schema({ ...NAME_PROP }, ["name"]),
       async handler(args) {
-        const path = resolvePath(
-          await resolveWorkingDir(),
-          nonEmptyString(args, "name"),
-        );
-        const file = await store.get(path);
-        if (!file) throw new Error(`File "${path}" not found`);
-        return file.content;
+        const path = resolvePath(nonEmptyString(args, "name"));
+        if (!(await statOrNull(path)))
+          throw new Error(`File "${asDisplayPath(path)}" not found`);
+        return readUtf8File(path);
       },
     },
     {
       name: "update_file",
       description:
-        "Replace the contents of an existing local file. Fails if it does not exist.",
+        "Replace contents of an existing file in phone Documents storage.",
       inputSchema: schema({ ...NAME_PROP, ...CONTENT_PROP }, ["name", "content"]),
       async handler(args) {
-        const path = resolvePath(
-          await resolveWorkingDir(),
-          nonEmptyString(args, "name"),
-        );
+        const path = resolvePath(nonEmptyString(args, "name"));
         const content = definedString(args, "content");
-        const updated = await store.update(path, (f) => ({
-          ...f,
-          content,
-          updatedAt: Date.now(),
-        }));
-        if (!updated) throw new Error(`File "${path}" not found`);
-        return `Updated ${path} (${content.length} chars).`;
+        if (!(await statOrNull(path)))
+          throw new Error(`File "${asDisplayPath(path)}" not found`);
+        const result = await Filesystem.writeFile({
+          path: storagePath(path),
+          directory: Directory.Documents,
+          data: content,
+          encoding: Encoding.UTF8,
+          recursive: true,
+        });
+        return `Updated ${asDisplayPath(path)} (${content.length} chars).\nDevice URI: ${result.uri}`;
       },
     },
     {
       name: "delete_file",
-      description: "Delete a local file by path. Fails if it does not exist.",
+      description: "Delete a file from phone Documents storage by path.",
       inputSchema: schema({ ...NAME_PROP }, ["name"]),
       async handler(args) {
-        const path = resolvePath(
-          await resolveWorkingDir(),
-          nonEmptyString(args, "name"),
-        );
-        if (!(await store.remove(path)))
-          throw new Error(`File "${path}" not found`);
-        return `Deleted ${path}.`;
+        const path = resolvePath(nonEmptyString(args, "name"));
+        if (!(await statOrNull(path)))
+          throw new Error(`File "${asDisplayPath(path)}" not found`);
+        await Filesystem.deleteFile({
+          path: storagePath(path),
+          directory: Directory.Documents,
+        });
+        return `Deleted ${asDisplayPath(path)}.`;
       },
     },
     {
       name: "list_files",
       description:
-        "List local files under a directory (the working directory by default), with sizes.",
+        "List files under a directory in phone Documents storage, with sizes.",
       inputSchema: schema({ ...PATH_PROP }, []),
       async handler(args) {
-        const workingDir = await resolveWorkingDir();
         const raw = optionalString(args, "path");
-        const dir = raw ? resolvePath(workingDir, raw) : workingDir;
-        const prefix = dir === "/" ? "/" : `${dir}/`;
-        const files = (await store.list())
-          .filter((f) => f.name === dir || f.name.startsWith(prefix))
-          .sort((a, b) => a.name.localeCompare(b.name));
+        const dir = resolveDir(raw || undefined);
+        const files = await listFilesRecursive(dir);
         if (!files.length) return `No files in ${dir}.`;
-        return files.map(summarize).join("\n");
+        return files.map((f) => summarize(f.name, f)).join("\n");
       },
     },
   ];
 }
 
-// ---- concrete instance wired to this app's IndexedDB stores --------------
-
-async function resolveWorkingDir(): Promise<string> {
-  const stored = await Meta.get<string>(WORKING_DIR_KEY);
-  if (typeof stored === "string" && stored.length > 0) return stored;
-  const dir = normalizePath(DEFAULT_WORKING_DIR);
-  await Meta.set(WORKING_DIR_KEY, dir);
-  return dir;
-}
-
 const registry = createToolRegistry(
   LOCAL_SERVER_ID,
   LOCAL_SERVER_NAME,
-  createFileTools({ store: Files, resolveWorkingDir }),
+  createFileTools(),
 );
 
 export const localTools = registry.tools;

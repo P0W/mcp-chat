@@ -1,13 +1,8 @@
 import { openDB, type IDBPDatabase } from "idb";
-import type {
-  Chat,
-  McpServerConfig,
-  ProviderConfig,
-  StoredFile,
-} from "./types";
+import type { Chat, McpServerConfig, ProviderConfig } from "./types";
 
 const DB_NAME = "mcp-chat";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -21,8 +16,7 @@ function db() {
           db.createObjectStore("mcps", { keyPath: "id" });
         if (!db.objectStoreNames.contains("chats"))
           db.createObjectStore("chats", { keyPath: "id" });
-        if (!db.objectStoreNames.contains("files"))
-          db.createObjectStore("files", { keyPath: "name" });
+        if (db.objectStoreNames.contains("files")) db.deleteObjectStore("files");
         if (!db.objectStoreNames.contains("meta"))
           db.createObjectStore("meta");
       },
@@ -86,7 +80,6 @@ function crudStore<T>(store: string): CrudStore<T> {
 
 export const Providers = crudStore<ProviderConfig>("providers");
 export const Mcps = crudStore<McpServerConfig>("mcps");
-export const Files = crudStore<StoredFile>("files");
 
 export const Chats: CrudStore<Chat> = {
   ...crudStore<Chat>("chats"),
