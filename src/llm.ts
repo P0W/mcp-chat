@@ -54,7 +54,7 @@ type ProtocolCaller = (opts: RunOptions) => Promise<LlmCallResult>;
 
 const PROTOCOL_CALLERS: Record<LlmProtocol, ProtocolCaller> = {
   openai: callChatCompletionsProtocol,
-  anthropic: callMessagesProtocol,
+  anthropic: callMessagesApiProtocol,
 };
 
 // FNV-1a (32-bit), returned as zero-padded base36 so the discriminator is a
@@ -256,7 +256,7 @@ async function callChatCompletionsProtocol(
   return { message };
 }
 
-async function callMessagesProtocol(
+async function callMessagesApiProtocol(
   opts: RunOptions,
 ): Promise<LlmCallResult> {
   const aMessages: unknown[] = [];
