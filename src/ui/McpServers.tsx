@@ -1,14 +1,31 @@
 import { useEffect, useState } from "react";
 import { Mcps as Db, uid } from "../db";
 import { connect, disconnect } from "../mcp";
-import type { McpAuthMode, McpServerConfig } from "../types";
+import type { McpAuthMode, McpServerConfig, OAuthState } from "../types";
 
-const PRESETS: { name: string; url: string; auth: McpAuthMode }[] = [
+interface Preset {
+  name: string;
+  url: string;
+  auth: McpAuthMode;
+  oauth?: OAuthState;
+  note?: string;
+}
+
+const PRESETS: Preset[] = [
   { name: "Zerodha Kite", url: "https://mcp.kite.trade/mcp", auth: "oauth" },
   {
     name: "Google Drive",
-    url: "https://drivemcp.googleapis.com/mcp/v1",
+    url: "",
     auth: "oauth",
+    oauth: {
+      authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenEndpoint: "https://oauth2.googleapis.com/token",
+      scope: "https://www.googleapis.com/auth/drive.readonly",
+    },
+    note:
+      "Google has no dynamic client registration, so the one-tap flow can't work. " +
+      "Enter the URL of a Google Drive MCP server plus a Client ID you create in " +
+      "Google Cloud Console (the OAuth endpoints and Drive scope are pre-filled).",
   },
 ];
 
@@ -30,12 +47,13 @@ export default function McpServers() {
     void reload();
   }, []);
 
-  function startNew(preset?: (typeof PRESETS)[number]) {
+  function startNew(preset?: Preset) {
     setEditing({
       id: uid(),
       name: preset?.name ?? "",
       url: preset?.url ?? "",
       auth: preset?.auth ?? "none",
+      oauth: preset?.oauth ? { ...preset.oauth } : undefined,
       enabled: true,
     });
   }
@@ -81,6 +99,12 @@ export default function McpServers() {
     await Db.put({ ...s, enabled: !s.enabled });
     if (s.enabled) disconnect(s.id);
     await reload();
+  }
+
+  function patchOauth(patch: Partial<OAuthState>) {
+    setEditing((cur) =>
+      cur ? { ...cur, oauth: { ...cur.oauth, ...patch } } : cur,
+    );
   }
 
   if (editing) {
@@ -130,13 +154,77 @@ export default function McpServers() {
           </>
         )}
 
-        {editing.auth === "oauth" && editing.oauth?.accessToken && (
-          <div className="text-xs text-emerald-400">
-            Authorized · token expires{" "}
-            {editing.oauth.expiresAt
-              ? new Date(editing.oauth.expiresAt).toLocaleString()
-              : "?"}
-          </div>
+        {editing.auth === "oauth" && (
+          <>
+            <p className="text-xs text-neutral-400">
+              Leave these blank to use automatic discovery + dynamic
+              registration (works for servers that host their own OAuth app,
+              e.g. Kite). Fill them in for providers like Google that require a
+              pre-registered Client ID.
+            </p>
+
+            <label className="label">Client ID</label>
+            <input
+              className="input"
+              placeholder="optional — required by Google etc."
+              value={editing.oauth?.clientId ?? ""}
+              onChange={(e) =>
+                patchOauth({ clientId: e.target.value || undefined })
+              }
+            />
+
+            <label className="label">Client secret</label>
+            <input
+              className="input"
+              type="password"
+              placeholder="optional — only for confidential clients"
+              value={editing.oauth?.clientSecret ?? ""}
+              onChange={(e) =>
+                patchOauth({ clientSecret: e.target.value || undefined })
+              }
+            />
+
+            <label className="label">Scope</label>
+            <input
+              className="input"
+              placeholder="optional — space-separated scopes"
+              value={editing.oauth?.scope ?? ""}
+              onChange={(e) =>
+                patchOauth({ scope: e.target.value || undefined })
+              }
+            />
+
+            <label className="label">Authorization endpoint</label>
+            <input
+              className="input"
+              placeholder="optional — auto-discovered if blank"
+              value={editing.oauth?.authorizationEndpoint ?? ""}
+              onChange={(e) =>
+                patchOauth({
+                  authorizationEndpoint: e.target.value || undefined,
+                })
+              }
+            />
+
+            <label className="label">Token endpoint</label>
+            <input
+              className="input"
+              placeholder="optional — auto-discovered if blank"
+              value={editing.oauth?.tokenEndpoint ?? ""}
+              onChange={(e) =>
+                patchOauth({ tokenEndpoint: e.target.value || undefined })
+              }
+            />
+
+            {editing.oauth?.accessToken && (
+              <div className="text-xs text-emerald-400">
+                Authorized · token expires{" "}
+                {editing.oauth.expiresAt
+                  ? new Date(editing.oauth.expiresAt).toLocaleString()
+                  : "?"}
+              </div>
+            )}
+          </>
         )}
 
         <div className="flex gap-2 pt-2">
@@ -234,7 +322,12 @@ export default function McpServers() {
               onClick={() => startNew(p)}
             >
               <div className="font-medium text-sm">{p.name}</div>
-              <div className="text-xs text-neutral-500 truncate">{p.url}</div>
+              <div className="text-xs text-neutral-500 truncate">
+                {p.url || "configure URL + Client ID"}
+              </div>
+              {p.note && (
+                <div className="text-xs text-neutral-500 mt-1">{p.note}</div>
+              )}
             </button>
           ))}
         </div>

@@ -276,10 +276,13 @@ async function discover(cfg: McpServerConfig, state: OAuthState) {
     `${asBase}/.well-known/oauth-authorization-server`,
   );
   if (!asMeta) throw new Error("OAuth: could not discover authorization server");
-  state.authorizationEndpoint = asMeta.authorization_endpoint;
-  state.tokenEndpoint = asMeta.token_endpoint;
-  state.registrationEndpoint = asMeta.registration_endpoint;
-  state.scope = (asMeta.scopes_supported ?? []).join(" ") || state.scope;
+  // Preserve any values the user configured manually — only fill the gaps from
+  // discovery. Servers without Dynamic Client Registration (e.g. Google) rely
+  // on a user-supplied client_id and scope that must not be clobbered here.
+  state.authorizationEndpoint ||= asMeta.authorization_endpoint;
+  state.tokenEndpoint ||= asMeta.token_endpoint;
+  state.registrationEndpoint ||= asMeta.registration_endpoint;
+  state.scope ||= (asMeta.scopes_supported ?? []).join(" ") || undefined;
 }
 
 async function tryFetchJson(url: string): Promise<any | null> {
