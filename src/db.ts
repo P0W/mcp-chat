@@ -2,7 +2,7 @@ import { openDB, type IDBPDatabase } from "idb";
 import type { Chat, McpServerConfig, ProviderConfig } from "./types";
 
 const DB_NAME = "mcp-chat";
-const DB_VERSION = 3;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -16,7 +16,8 @@ function db() {
           db.createObjectStore("mcps", { keyPath: "id" });
         if (!db.objectStoreNames.contains("chats"))
           db.createObjectStore("chats", { keyPath: "id" });
-        if (db.objectStoreNames.contains("files")) db.deleteObjectStore("files");
+        if (!db.objectStoreNames.contains("files"))
+          db.createObjectStore("files", { keyPath: "name" });
         if (!db.objectStoreNames.contains("meta"))
           db.createObjectStore("meta");
       },

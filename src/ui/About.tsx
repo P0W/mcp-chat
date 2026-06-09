@@ -1,7 +1,7 @@
 const buildDate = new Date(__BUILD_TIME__);
 
 function formatDateTime(date: Date): string {
-  if (Number.isNaN(date.getTime())) return __BUILD_TIME__;
+  if (Number.isNaN(date.getTime())) return "Unknown build time";
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "medium",
