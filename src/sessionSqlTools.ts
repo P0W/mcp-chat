@@ -43,6 +43,7 @@ let sqlJsPromise: Promise<SqlJsStatic> | null = null;
 const databases = new Map<string, SqlDatabase>();
 const pendingDatabases = new Map<string, Promise<SqlDatabase>>();
 const dbLocks = new Map<string, Promise<void>>();
+let allDbLock: Promise<void> | null = null;
 
 function schema(properties: object, required: string[]): object {
   return { type: "object", properties, required };
@@ -153,6 +154,7 @@ async function getDb(name: string): Promise<SqlDatabase> {
 }
 
 async function withDbLock<T>(name: string, action: () => Promise<T>): Promise<T> {
+  if (allDbLock) await allDbLock;
   const previous = dbLocks.get(name) ?? Promise.resolve();
   const run = previous.catch(() => undefined).then(action);
   const cleanup = run.then(
@@ -167,9 +169,21 @@ async function withDbLock<T>(name: string, action: () => Promise<T>): Promise<T>
   }
 }
 
-async function waitForDbLocks(): Promise<void> {
-  while (dbLocks.size) {
-    await Promise.all([...dbLocks.values()].map((lock) => lock.catch(() => undefined)));
+async function withAllDbLock<T>(action: () => Promise<T>): Promise<T> {
+  if (allDbLock) await allDbLock;
+  let release: () => void = () => undefined;
+  const lock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  allDbLock = lock;
+  try {
+    while (dbLocks.size) {
+      await Promise.all([...dbLocks.values()].map((item) => item.catch(() => undefined)));
+    }
+    return await action();
+  } finally {
+    if (allDbLock === lock) allDbLock = null;
+    release();
   }
 }
 
@@ -690,11 +704,12 @@ export function createSessionSqlTools(): ToolDef[] {
       ),
       async handler(args) {
         if (args.all === true) {
-          await waitForDbLocks();
-          for (const db of databases.values()) db.close();
-          const count = databases.size;
-          databases.clear();
-          return `Dropped ${count} session database${count === 1 ? "" : "s"}.`;
+          return withAllDbLock(async () => {
+            for (const db of databases.values()) db.close();
+            const count = databases.size;
+            databases.clear();
+            return `Dropped ${count} session database${count === 1 ? "" : "s"}.`;
+          });
         }
         const name = dbName(args);
         return withDbLock(name, async () => {
