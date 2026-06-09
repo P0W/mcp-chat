@@ -6,6 +6,7 @@ const SQL_SERVER_NAME = "Session SQLite";
 const DEFAULT_DB = "default";
 const MAX_IMPORT_BYTES = 2_000_000;
 const MAX_IMPORT_ROWS = 20_000;
+const MAX_DB_IMPORT_BYTES = 8_000_000;
 const DEFAULT_MAX_ROWS = 200;
 const MAX_RESULT_ROWS = 1_000;
 const MAX_RESULT_CHARS = 60_000;
@@ -32,6 +33,7 @@ interface SqlJsStatic {
 
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
 const databases = new Map<string, SqlDatabase>();
+const pendingDatabases = new Map<string, Promise<SqlDatabase>>();
 
 function schema(properties: object, required: string[]): object {
   return { type: "object", properties, required };
@@ -121,10 +123,25 @@ async function sqlJs(): Promise<SqlJsStatic> {
 async function getDb(name: string): Promise<SqlDatabase> {
   const current = databases.get(name);
   if (current) return current;
-  const SQL = await sqlJs();
-  const db = new SQL.Database();
-  databases.set(name, db);
-  return db;
+  const pending = pendingDatabases.get(name);
+  if (pending) return pending;
+  const created = (async () => {
+    const SQL = await sqlJs();
+    const db = new SQL.Database();
+    const existing = databases.get(name);
+    if (existing) {
+      db.close();
+      return existing;
+    }
+    databases.set(name, db);
+    return db;
+  })();
+  pendingDatabases.set(name, created);
+  try {
+    return await created;
+  } finally {
+    pendingDatabases.delete(name);
+  }
 }
 
 function resultRows(result: QueryResult, maxRows: number): Record<string, Cell>[] {
@@ -192,18 +209,22 @@ function detectKind(data: string, requested: ImportKind): ImportKind {
 
 function looksLikeMarkdownTable(data: string): boolean {
   const lines = data.split(/\r?\n/).filter((line) => line.trim());
-  return (
-    lines.length >= 2 &&
-    lines[0]!.includes("|") &&
-    /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[1]!)
+  const header = lines[0];
+  const divider = lines[1];
+  return Boolean(
+    header?.includes("|") &&
+      divider &&
+      /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(divider),
   );
 }
 
 function looksLikeCsv(data: string): boolean {
   const lines = data.split(/\r?\n/).filter((line) => line.trim());
-  if (lines.length < 2) return false;
-  const first = parseCsvLine(lines[0]!);
-  const second = parseCsvLine(lines[1]!);
+  const firstLine = lines[0];
+  const secondLine = lines[1];
+  if (firstLine === undefined || secondLine === undefined) return false;
+  const first = parseCsvLine(firstLine);
+  const second = parseCsvLine(secondLine);
   return first.length > 1 && second.length === first.length;
 }
 
@@ -217,7 +238,7 @@ function parseCsv(data: string): string[][] {
   let quoteLine = 1;
   let quoteColumn = 1;
   for (let i = 0; i < data.length; i++) {
-    const ch = data[i]!;
+    const ch = data.charAt(i);
     const next = data[i + 1];
     if (quoted) {
       if (ch === '"' && next === '"') {
@@ -334,9 +355,9 @@ function parseRows(data: string, kind: ImportKind): { columns: string[]; rows: C
   const table = kind === "markdown" ? parseMarkdownTable(data) : parseCsv(data);
   if (!table.length) return { columns: ["value"], rows: [] };
   const width = Math.max(...table.map((row) => row.length));
-  const header = table[0] ?? [];
+  const [header] = table;
   const columns = uniqueColumns(
-    Array.from({ length: width }, (_value, idx) => header[idx] ?? `col_${idx + 1}`),
+    Array.from({ length: width }, (_value, idx) => header?.[idx] ?? `col_${idx + 1}`),
   );
   return {
     columns,
@@ -405,7 +426,12 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value.replace(/\s+/g, ""));
+  const compact = value.replace(/\s+/g, "");
+  const decodedLength = Math.floor((compact.length * 3) / 4) -
+    (compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0);
+  if (decodedLength > MAX_DB_IMPORT_BYTES)
+    throw new Error(`Database import exceeds ${MAX_DB_IMPORT_BYTES} bytes`);
+  const binary = atob(compact);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
