@@ -33,16 +33,28 @@ const ELIDED_PREFIX = "[Elided tool result";
 
 const TOOL_NAME_RE = /[^a-zA-Z0-9_-]/g;
 const TOOL_KEY_MAX = 64;
-const TOOL_KEY_DISCRIMINATOR = 8;
+// Fixed-width base36 FNV-1a hash (32-bit → at most 7 base36 chars).
+const TOOL_KEY_HASH_LEN = 7;
 
-// Key tools by a stable, sanitized serverId discriminator (not the mutable
-// display name) so tools from different servers can never collide — even when
-// two servers share a name or expose an identically named tool. The readable
-// tool name stays first; the short serverId suffix guarantees uniqueness.
+// FNV-1a (32-bit), returned as zero-padded base36 so the discriminator is a
+// fixed width that depends on the *entire* input, not a truncated prefix.
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36).padStart(TOOL_KEY_HASH_LEN, "0");
+}
+
+// Advertise a stable, provider-safe tool name. The readable tool name comes
+// first (for legibility), followed by a hash of the full (serverId, name)
+// identity. Because the hash covers the *complete* identity — not a truncated
+// prefix of either field — two distinct tools cannot collide even if their
+// readable names are truncated to the same prefix or their serverIds share a
+// prefix. parseToolKey recomputes this key, so the mapping round-trips.
 function toolKey(t: McpTool): string {
-  const disc = t.serverId
-    .replace(TOOL_NAME_RE, "_")
-    .slice(0, TOOL_KEY_DISCRIMINATOR);
+  const disc = fnv1a(`${t.serverId}\u0000${t.name}`);
   const name = t.name
     .replace(TOOL_NAME_RE, "_")
     .slice(0, TOOL_KEY_MAX - disc.length - 2);
@@ -108,7 +120,7 @@ export async function runChat(opts: RunOptions): Promise<void> {
         role: "tool",
         content,
         toolCallId: tc.id,
-        toolName: tc.name,
+        toolName: parsed?.tool.name ?? tc.name,
         createdAt: Date.now(),
       };
       opts.onToolResult(toolMsg);
@@ -373,7 +385,7 @@ function compactMessages(
   for (const c of candidates) {
     if (totalBytes <= budgetBytes) break;
     const orig = out[c.idx];
-    const toolBare = (orig.toolName ?? "tool").split("__").pop();
+    const toolBare = orig.toolName ?? "tool";
     const marker =
       `${ELIDED_PREFIX} from ${toolBare}: ${orig.content.length} chars omitted ` +
       `to fit context. Re-call the tool if you need this data.]`;

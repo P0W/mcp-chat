@@ -378,7 +378,7 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
     return (
       <details className="text-xs text-neutral-400">
         <summary className="cursor-pointer select-none px-2">
-          tool · {(msg.toolName ?? "").split("__").pop()}
+          tool · {msg.toolName ?? ""}
         </summary>
         <pre className="mt-1 mx-2 bg-neutral-900 p-2 rounded-lg overflow-x-auto whitespace-pre-wrap text-[11px]">
           {msg.content}
