@@ -15,6 +15,9 @@ Designed for Pixel 10a but should work on any Android 7+ device.
   none, bearer token, or OAuth 2.1 (auto-discovery, dynamic client
   registration, PKCE).
 - **Tools loop**: the assistant sees and can call all enabled MCP tools.
+- **Session SQLite**: optional in-memory SQLite tools let chats import MCP
+  output or local markdown/CSV/text/JSON file contents, run joins, groups,
+  sorts, and other SQL locally, then drop or export the database when done.
 - **On-device only**: provider keys, MCP configs, and chats live in IndexedDB
   on your phone. Nothing is sent anywhere except the LLM and MCP servers you
   configured.
@@ -96,6 +99,7 @@ src/
   db.ts           IndexedDB (providers, mcps, chats)
   llm.ts          provider-agnostic LLM with tool-call loop
   mcp.ts          Streamable HTTP MCP client + OAuth (PKCE + DCR)
+  sessionSqlTools.ts optional in-memory SQLite data tools
   App.tsx         tab router
   main.tsx        React entry
   index.css       Tailwind + small markdown styles
