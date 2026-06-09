@@ -21,12 +21,7 @@ const mcpProxy: Plugin = {
           res.end("Bad proxy URL");
           return;
         }
-        const origin = m[1];
-        if (!origin) {
-          res.statusCode = 400;
-          res.end("Bad proxy URL");
-          return;
-        }
+        const origin = m[1] as string;
         const target = origin + (m[2] || "/");
         const headers: Record<string, string> = {};
         for (const [k, v] of Object.entries(req.headers)) {

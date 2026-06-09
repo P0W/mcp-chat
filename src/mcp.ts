@@ -81,7 +81,7 @@ async function rpc<T>(
 
   if (res.status === 401 && cfg.auth === "oauth") {
     await runOAuth(cfg);
-    return rpc<T>(cfg, s, method, params, notify);
+    return rpc<T>(cfg, s, method, params, notify, signal);
   }
   if (!res.ok) throw new Error(`MCP ${res.status}: ${await res.text()}`);
 
@@ -136,6 +136,7 @@ async function readSseResponse<T>(
     }
   } finally {
     signal?.removeEventListener("abort", abort);
+    void reader.cancel().catch(() => {});
   }
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   throw new Error("MCP: stream ended without response");
