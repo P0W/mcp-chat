@@ -106,8 +106,8 @@ export default function Chat({
       const existing = lastChatId ? await Chats.get(lastChatId) : null;
       if (existing) {
         setActiveChat(existing);
-      } else {
-        if (list[0]) setActiveChat(newChat(list[0].id));
+      } else if (list.length > 0) {
+        setActiveChat(newChat(list[0]!.id));
       }
       setHistory(await Chats.list());
       await loadAllTools();
@@ -247,10 +247,9 @@ export default function Chat({
   }
 
   function startNewChat() {
-    if (!providers.length) return;
-    stop();
     const firstProvider = providers[0];
     if (!firstProvider) return;
+    stop();
     const providerId = chat?.providerId ?? firstProvider.id;
     const c = newChat(providerId);
     queuedRef.current = [];

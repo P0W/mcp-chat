@@ -37,9 +37,9 @@ export interface CompactInfo {
   elided: number;
 }
 
-// Conservative default — fits Llama 4 Scout (32k), modest for everyone else.
+// Conservative input budget — leaves output headroom without capping responses.
 // Per-provider override later via provider.contextLimit if needed.
-const DEFAULT_BUDGET_TOKENS = 28_000;
+const DEFAULT_BUDGET_TOKENS = 24_000;
 const CHARS_PER_TOKEN = 4;
 const ELIDABLE_MIN_BYTES = 500;
 const ELIDED_PREFIX = "[Elided tool result";
@@ -392,8 +392,8 @@ function compactMessages(
   // Protect everything from the most recent user turn onwards.
   let protectFrom = messages.length;
   for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message?.role === "user") {
+    const message = messages[i]!;
+    if (message.role === "user") {
       protectFrom = i;
       break;
     }
@@ -541,7 +541,9 @@ function parseRetryAfter(h: string | null): number | null {
 function parseRetryFromBody(body: string): number | null {
   const m = body.match(/try again in ([\d.]+)s/i);
   const seconds = m?.[1];
-  return seconds ? Math.ceil(parseFloat(seconds) * 1000) : null;
+  if (!seconds) return null;
+  const parsed = parseFloat(seconds);
+  return Number.isFinite(parsed) ? Math.ceil(parsed * 1000) : null;
 }
 
 function safeJson(s: string): unknown {
