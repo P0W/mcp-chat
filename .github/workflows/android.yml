@@ -17,6 +17,11 @@ jobs:
     name: Build release APK
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+      RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+      RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+      RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -47,6 +52,12 @@ jobs:
 
       - name: Capacitor sync
         run: npx cap sync android
+
+      - name: Set up release signing
+        if: env.RELEASE_KEYSTORE_B64 != ''
+        run: |
+          echo "$RELEASE_KEYSTORE_B64" | base64 -d > /tmp/release.keystore
+          echo "RELEASE_STORE_FILE=/tmp/release.keystore" >> "$GITHUB_ENV"
 
       - name: Gradle assembleRelease
         working-directory: android
