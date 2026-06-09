@@ -321,6 +321,10 @@ async function callMessagesApiProtocol(
     else if (block.type === "tool_use")
       toolCalls.push({ id: block.id, name: block.name, args: block.input });
   }
+  if (json.stop_reason === "max_tokens") {
+    text +=
+      "\n\n[Response stopped at the provider output limit. Ask to continue if you need the rest.]";
+  }
 
   const message: ChatMessage = {
     id: uid(),
@@ -399,36 +403,14 @@ function compactMessages(
     }
   }
 
-  // Find elidable tool results (older than current turn, not already elided,
-  // and large enough to be worth the marker overhead).
-  const candidates: { idx: number; size: number }[] = [];
-  for (let i = 0; i < protectFrom; i++) {
-    const m = messages[i];
-    if (!m) continue;
-    if (
-      m.role !== "tool" ||
-      m.content.length < ELIDABLE_MIN_BYTES ||
-      m.content.startsWith(ELIDED_PREFIX)
-    )
-      continue;
-    candidates.push({ idx: i, size: m.content.length });
-  }
-  candidates.sort((a, b) => b.size - a.size);
-
   const out = messages.slice();
   let elided = 0;
-  for (const c of candidates) {
-    if (totalBytes <= budgetBytes) break;
-    const orig = out[c.idx];
-    if (!orig) continue;
-    const toolBare = orig.toolName ?? "tool";
-    const marker =
-      `${ELIDED_PREFIX} from ${toolBare}: ${orig.content.length} chars omitted ` +
-      `to fit context. Re-call the tool if you need this data.]`;
-    totalBytes -= orig.content.length - marker.length;
-    out[c.idx] = { ...orig, content: marker };
-    elided++;
-  }
+
+  // Prefer eliding older tool results, but if the current turn still exceeds
+  // budget, also elide oversized current-turn tool results rather than failing.
+  elided += elideToolResults(out, 0, protectFrom);
+  if (totalBytes > budgetBytes)
+    elided += elideToolResults(out, protectFrom, messages.length);
 
   return {
     messages: out,
@@ -436,6 +418,41 @@ function compactMessages(
     finalTokens: toTokens(totalBytes + baselineBytes),
     elided,
   };
+
+  function elideToolResults(
+    out: ChatMessage[],
+    start: number,
+    end: number,
+  ): number {
+    const candidates: { idx: number; size: number }[] = [];
+    for (let i = start; i < end; i++) {
+      const m = out[i];
+      if (!m) continue;
+      if (
+        m.role !== "tool" ||
+        m.content.length < ELIDABLE_MIN_BYTES ||
+        m.content.startsWith(ELIDED_PREFIX)
+      )
+        continue;
+      candidates.push({ idx: i, size: m.content.length });
+    }
+    candidates.sort((a, b) => b.size - a.size);
+
+    let count = 0;
+    for (const c of candidates) {
+      if (totalBytes <= budgetBytes) break;
+      const orig = out[c.idx];
+      if (!orig) continue;
+      const toolBare = orig.toolName ?? "tool";
+      const marker =
+        `${ELIDED_PREFIX} from ${toolBare}: ${orig.content.length} chars omitted ` +
+        `to fit context. Re-call the tool if you need this data.]`;
+      totalBytes -= orig.content.length - marker.length;
+      out[c.idx] = { ...orig, content: marker };
+      count++;
+    }
+    return count;
+  }
 }
 
 // Auto-retry once on 429. Honors Retry-After header (seconds or HTTP date),
