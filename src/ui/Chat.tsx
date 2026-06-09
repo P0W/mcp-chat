@@ -70,6 +70,9 @@ export default function Chat({
   const [history, setHistory] = useState<ChatT[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [responseState, setResponseState] = useState<"idle" | "complete" | "stopped">(
+    "idle",
+  );
   const [compact, setCompact] = useState<CompactInfo | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -177,6 +180,7 @@ export default function Chat({
     };
     setInput("");
     setError(null);
+    setResponseState("idle");
 
     if (runningRef.current) {
       const queued = [...queuedRef.current, userMsg];
@@ -203,6 +207,7 @@ export default function Chat({
     const controller = new AbortController();
     abortRef.current = controller;
     let pending = initialMessages;
+    let failed = false;
 
     try {
       while (pending.length) {
@@ -233,6 +238,7 @@ export default function Chat({
         pending = drainQueuedMessages();
       }
     } catch (e) {
+      failed = true;
       const msg = (e as Error).message;
       if (!controller.signal.aborted) setError(msg);
     } finally {
@@ -247,6 +253,10 @@ export default function Chat({
       runningRef.current = false;
       setBusy(false);
       const continueWith = drainQueuedMessages();
+      if (!continueWith.length) {
+        if (controller.signal.aborted) setResponseState("stopped");
+        else if (!failed) setResponseState("complete");
+      }
       if (continueWith.length) void runConversation(continueWith);
     }
   }
@@ -269,6 +279,7 @@ export default function Chat({
     setShowHistory(false);
     setCompact(null);
     setError(null);
+    setResponseState("idle");
   }
 
   if (!hasProvider) {
@@ -407,6 +418,18 @@ export default function Chat({
           <div className="flex items-center gap-2 text-sm text-neutral-500 px-2">
             <span className="inline-block w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
             Thinking...
+          </div>
+        )}
+        {!busy && responseState === "complete" && (
+          <div className="flex items-center gap-2 text-sm text-emerald-400 px-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+            Response complete
+          </div>
+        )}
+        {!busy && responseState === "stopped" && (
+          <div className="flex items-center gap-2 text-sm text-amber-400 px-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
+            Response stopped
           </div>
         )}
         {error && (
