@@ -5,6 +5,11 @@ import type { McpAuthMode, McpServerConfig } from "../types";
 
 const PRESETS: { name: string; url: string; auth: McpAuthMode }[] = [
   { name: "Zerodha Kite", url: "https://mcp.kite.trade/mcp", auth: "oauth" },
+  {
+    name: "Google Drive",
+    url: "https://drivemcp.googleapis.com/mcp/v1",
+    auth: "oauth",
+  },
 ];
 
 interface Status {

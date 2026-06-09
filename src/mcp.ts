@@ -29,7 +29,7 @@ function effectiveUrl(url: string): string {
   return url;
 }
 
-export function redirectUri(): string {
+function redirectUri(): string {
   return isNative()
     ? "mcpchat://oauth-callback"
     : `${location.origin}/oauth-callback`;
