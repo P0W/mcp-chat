@@ -21,7 +21,13 @@ const mcpProxy: Plugin = {
           res.end("Bad proxy URL");
           return;
         }
-        const target = m[1] + (m[2] || "/");
+        const origin = m[1];
+        if (!origin) {
+          res.statusCode = 400;
+          res.end("Bad proxy URL");
+          return;
+        }
+        const target = origin + (m[2] || "/");
         const headers: Record<string, string> = {};
         for (const [k, v] of Object.entries(req.headers)) {
           if (!v) continue;
@@ -34,11 +40,10 @@ const mcpProxy: Plugin = {
         for await (const chunk of req) chunks.push(chunk as Buffer);
         const body = chunks.length ? Buffer.concat(chunks) : undefined;
 
-        const r = await fetch(target, {
-          method: req.method,
-          headers,
-          body,
-        });
+        const init: RequestInit = { headers };
+        if (req.method) init.method = req.method;
+        if (body) init.body = body;
+        const r = await fetch(target, init);
 
         res.statusCode = r.status;
         r.headers.forEach((v, k) => {

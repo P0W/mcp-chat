@@ -30,10 +30,15 @@ const isNative = () => Capacitor.isNativePlatform();
 const IS_NATIVE = isNative();
 
 // Route a tool call to the local built-in tools or the matching MCP server.
-const runToolCall = (serverId: string, name: string, args: unknown) =>
+const runToolCall = (
+  serverId: string,
+  name: string,
+  args: unknown,
+  signal?: AbortSignal,
+) =>
   serverId === LOCAL_SERVER_ID
     ? callLocalTool(name, args)
-    : callTool(serverId, name, args);
+    : callTool(serverId, name, args, signal);
 
 export default function Chat({
   hasProvider,
@@ -50,12 +55,48 @@ export default function Chat({
   );
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [queuedMessages, setQueuedMessages] = useState<ChatMessage[]>([]);
   const [history, setHistory] = useState<ChatT[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [compact, setCompact] = useState<CompactInfo | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const chatRef = useRef<ChatT | null>(null);
+  const queuedRef = useRef<ChatMessage[]>([]);
+  const runningRef = useRef(false);
+
+  function setActiveChat(next: ChatT | null) {
+    chatRef.current = next;
+    setChat(next);
+  }
+
+  function appendMessages(base: ChatT, messages: ChatMessage[]): ChatT {
+    const firstUser = messages.find((m) => m.role === "user");
+    return {
+      ...base,
+      messages: [...base.messages, ...messages],
+      title:
+        base.messages.length === 0 && firstUser
+          ? firstUser.content.slice(0, 40)
+          : base.title,
+      updatedAt: Date.now(),
+    };
+  }
+
+  function appendMessagesToChat(chatId: string, messages: ChatMessage[]) {
+    const current = chatRef.current;
+    if (!current || current.id !== chatId) return;
+    setActiveChat(appendMessages(current, messages));
+  }
+
+  function drainQueuedMessages(): ChatMessage[] {
+    const queued = queuedRef.current;
+    if (!queued.length) return [];
+    queuedRef.current = [];
+    setQueuedMessages([]);
+    return queued;
+  }
 
   useEffect(() => {
     void (async () => {
@@ -64,9 +105,10 @@ export default function Chat({
       const lastChatId = await Meta.get<string>("lastChatId");
       const existing = lastChatId ? await Chats.get(lastChatId) : null;
       if (existing) {
-        setChat(existing);
-      } else if (list.length) {
-        setChat(newChat(list[0].id));
+        setActiveChat(existing);
+      } else {
+        const firstProvider = list[0];
+        if (firstProvider) setActiveChat(newChat(firstProvider.id));
       }
       setHistory(await Chats.list());
       await loadAllTools();
@@ -113,74 +155,107 @@ export default function Chat({
   }
 
   async function send() {
-    if (!input.trim() || !chat || busy) return;
-    const provider = providers.find((p) => p.id === chat.providerId);
+    const content = input.trim();
+    const activeChat = chatRef.current;
+    if (!content || !activeChat) return;
+
+    const userMsg: ChatMessage = {
+      id: uid(),
+      role: "user",
+      content,
+      createdAt: Date.now(),
+    };
+    setInput("");
+    setError(null);
+
+    if (runningRef.current) {
+      const queued = [...queuedRef.current, userMsg];
+      queuedRef.current = queued;
+      setQueuedMessages(queued);
+      return;
+    }
+
+    await runConversation([userMsg]);
+  }
+
+  async function runConversation(initialMessages: ChatMessage[]) {
+    const activeChat = chatRef.current;
+    if (!activeChat) return;
+    const chatId = activeChat.id;
+    const provider = providers.find((p) => p.id === activeChat.providerId);
     if (!provider) {
       setError("No provider selected.");
       return;
     }
 
-    setError(null);
+    runningRef.current = true;
     setBusy(true);
-    const userMsg: ChatMessage = {
-      id: uid(),
-      role: "user",
-      content: input.trim(),
-      createdAt: Date.now(),
-    };
-    const next: ChatT = {
-      ...chat,
-      messages: [...chat.messages, userMsg],
-      title: chat.messages.length === 0 ? userMsg.content.slice(0, 40) : chat.title,
-      updatedAt: Date.now(),
-    };
-    setChat(next);
-    setInput("");
-
     const controller = new AbortController();
     abortRef.current = controller;
+    let pending = initialMessages;
 
     try {
-      const working = [...next.messages];
-      await runChat({
-        provider,
-        systemPrompt: SYSTEM_PROMPT,
-        messages: working,
-        tools,
-        runner: { call: runToolCall },
-        signal: controller.signal,
-        onAssistant: (m) =>
-          setChat((c) => (c ? { ...c, messages: [...c.messages, m] } : c)),
-        onToolResult: (m) =>
-          setChat((c) => (c ? { ...c, messages: [...c.messages, m] } : c)),
-        onCompact: setCompact,
-      });
+      while (pending.length) {
+        appendMessagesToChat(chatId, pending);
+        const current = chatRef.current;
+        if (!current || current.id !== chatId) return;
+        const working = [...current.messages];
+        await runChat({
+          provider,
+          systemPrompt: SYSTEM_PROMPT,
+          messages: working,
+          tools,
+          runner: { call: runToolCall },
+          signal: controller.signal,
+          drainQueuedMessages,
+          onQueuedMessages: (messages) => appendMessagesToChat(chatId, messages),
+          onAssistant: (m) => appendMessagesToChat(chatId, [m]),
+          onToolResult: (m) => appendMessagesToChat(chatId, [m]),
+          onCompact: setCompact,
+        });
 
-      setChat((c) => {
-        if (!c) return c;
-        const finalChat = { ...c, updatedAt: Date.now() };
-        void Chats.put(finalChat);
-        void Meta.set("lastChatId", finalChat.id);
-        return finalChat;
-      });
-      setHistory(await Chats.list());
+        const finalChat = chatRef.current;
+        if (finalChat?.id === chatId) {
+          await Chats.put(finalChat);
+          await Meta.set("lastChatId", finalChat.id);
+        }
+        setHistory(await Chats.list());
+        pending = drainQueuedMessages();
+      }
     } catch (e) {
       const msg = (e as Error).message;
       if (!controller.signal.aborted) setError(msg);
     } finally {
+      const finalChat = chatRef.current;
+      if (finalChat?.id === chatId) {
+        await Chats.put(finalChat);
+        await Meta.set("lastChatId", finalChat.id);
+        setHistory(await Chats.list());
+      }
+      if (abortRef.current !== controller) return;
       abortRef.current = null;
+      runningRef.current = false;
       setBusy(false);
+      const continueWith = drainQueuedMessages();
+      if (continueWith.length) void runConversation(continueWith);
     }
   }
 
   function stop() {
+    queuedRef.current = [];
+    setQueuedMessages([]);
     abortRef.current?.abort();
   }
 
   function startNewChat() {
     if (!providers.length) return;
-    const c = newChat(chat?.providerId ?? providers[0].id);
-    setChat(c);
+    stop();
+    const providerId = chat?.providerId ?? providers[0]?.id;
+    if (!providerId) return;
+    const c = newChat(providerId);
+    queuedRef.current = [];
+    setQueuedMessages([]);
+    setActiveChat(c);
     setShowHistory(false);
     setCompact(null);
     setError(null);
@@ -236,7 +311,8 @@ export default function Chat({
               aria-label={`Open chat: ${h.title}`}
               disabled={!showHistory}
               onClick={() => {
-                setChat(h);
+                stop();
+                setActiveChat(h);
                 setShowHistory(false);
               }}
             >
@@ -267,7 +343,7 @@ export default function Chat({
               className="bg-neutral-900 border border-neutral-800 rounded-lg text-xs px-2 py-1"
               value={chat.providerId}
               onChange={(e) =>
-                setChat({ ...chat, providerId: e.target.value })
+                setActiveChat({ ...chat, providerId: e.target.value })
               }
             >
               {providers.map((p) => (
@@ -314,6 +390,9 @@ export default function Chat({
         {chat?.messages.map((m) => (
           <MessageBubble key={m.id} msg={m} />
         ))}
+        {queuedMessages.map((m) => (
+          <QueuedMessage key={m.id} msg={m} />
+        ))}
         {busy && (
           <div className="flex items-center gap-2 text-sm text-neutral-500 px-2">
             <span className="inline-block w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
@@ -334,7 +413,7 @@ export default function Chat({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (IS_NATIVE) return;
-              if (e.key === "Enter" && !e.shiftKey && !busy) {
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 void send();
               }
@@ -345,19 +424,20 @@ export default function Chat({
             className="input resize-none max-h-40"
             style={{ minHeight: "2.5rem" }}
           />
-          {busy ? (
+          {busy && (
             <button className="btn" onClick={stop} title="Stop">
               Stop
             </button>
-          ) : (
-            <button
-              className="btn btn-primary"
-              disabled={!input.trim()}
-              onClick={() => void send()}
-            >
-              Send
-            </button>
           )}
+          <button
+            className="btn btn-primary aspect-square px-2.5"
+            disabled={!input.trim() || !chat}
+            aria-label={busy ? "Queue message" : "Send message"}
+            title={busy ? "Queue message" : "Send message"}
+            onClick={() => void send()}
+          >
+            <ArrowUpIcon />
+          </button>
         </div>
       </div>
     </div>
@@ -404,4 +484,35 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
     );
   }
   return null;
+}
+
+function QueuedMessage({ msg }: { msg: ChatMessage }) {
+  return (
+    <div className="flex justify-end opacity-70">
+      <div className="max-w-[85%] rounded-2xl rounded-br-md border border-indigo-500/50 bg-indigo-600/40 px-4 py-2 text-sm whitespace-pre-wrap">
+        <div className="mb-1 text-[10px] uppercase tracking-wide text-indigo-100/80">
+          queued
+        </div>
+        {msg.content}
+      </div>
+    </div>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+    >
+      <path d="M10 16V4" />
+      <path d="M5 9l5-5 5 5" />
+    </svg>
+  );
 }

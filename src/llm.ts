@@ -1,7 +1,12 @@
 import type { ChatMessage, McpTool, ProviderConfig, ToolCall } from "./types";
 
 export interface ToolRunner {
-  call(serverId: string, toolName: string, args: unknown): Promise<string>;
+  call(
+    serverId: string,
+    toolName: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ): Promise<string>;
 }
 
 export interface RunOptions {
@@ -16,6 +21,8 @@ export interface RunOptions {
   maxIterations?: number;
   contextBudgetTokens?: number;
   signal?: AbortSignal;
+  drainQueuedMessages?: () => ChatMessage[];
+  onQueuedMessages?: (messages: ChatMessage[]) => void;
 }
 
 export interface CompactInfo {
@@ -78,6 +85,7 @@ export async function runChat(opts: RunOptions): Promise<void> {
   const budget = opts.contextBudgetTokens ?? DEFAULT_BUDGET_TOKENS;
 
   for (let i = 0; i < max; i++) {
+    throwIfAborted(opts.signal);
     // Compact prompt only if it would exceed budget. Protects the current
     // turn (everything from the last user message onward) and only elides
     // older tool results — replaced with a marker telling the model to
@@ -96,10 +104,14 @@ export async function runChat(opts: RunOptions): Promise<void> {
     opts.onAssistant(result.message);
     opts.messages.push(result.message);
 
-    if (!result.message.toolCalls || result.message.toolCalls.length === 0)
+    const canContinue = i < max - 1;
+    if (!result.message.toolCalls || result.message.toolCalls.length === 0) {
+      if (canContinue && appendQueuedMessages(opts)) continue;
       return;
+    }
 
     for (const tc of result.message.toolCalls) {
+      throwIfAborted(opts.signal);
       const parsed = parseToolKey(tc.name, opts.tools);
       let content: string;
       if (!parsed) {
@@ -110,8 +122,10 @@ export async function runChat(opts: RunOptions): Promise<void> {
             parsed.tool.serverId,
             parsed.tool.name,
             tc.args,
+            opts.signal,
           );
         } catch (e) {
+          throwIfAborted(opts.signal);
           content = `Error: ${(e as Error).message}`;
         }
       }
@@ -126,7 +140,16 @@ export async function runChat(opts: RunOptions): Promise<void> {
       opts.onToolResult(toolMsg);
       opts.messages.push(toolMsg);
     }
+    if (canContinue) appendQueuedMessages(opts);
   }
+}
+
+function appendQueuedMessages(opts: RunOptions): boolean {
+  const queued = opts.drainQueuedMessages?.() ?? [];
+  if (!queued.length) return false;
+  opts.messages.push(...queued);
+  opts.onQueuedMessages?.(queued);
+  return true;
 }
 
 function buildToolDefs(tools: McpTool[], protocol: "openai" | "anthropic") {
@@ -185,13 +208,13 @@ async function callOpenAI(opts: RunOptions): Promise<{ message: ChatMessage }> {
     `${trimSlash(opts.provider.baseUrl)}/chat/completions`,
     {
       method: "POST",
-      signal: opts.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${opts.provider.apiKey}`,
         ...(opts.provider.extraHeaders ?? {}),
       },
       body: JSON.stringify(body),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     },
   );
 
@@ -209,15 +232,14 @@ async function callOpenAI(opts: RunOptions): Promise<{ message: ChatMessage }> {
     args: safeJson(tc.function.arguments),
   }));
 
-  return {
-    message: {
-      id: uid(),
-      role: "assistant",
-      content: choice.content ?? "",
-      toolCalls,
-      createdAt: Date.now(),
-    },
+  const message: ChatMessage = {
+    id: uid(),
+    role: "assistant",
+    content: choice.content ?? "",
+    createdAt: Date.now(),
   };
+  if (toolCalls) message.toolCalls = toolCalls;
+  return { message };
 }
 
 async function callAnthropic(
@@ -265,7 +287,6 @@ async function callAnthropic(
     `${trimSlash(opts.provider.baseUrl)}/messages`,
     {
       method: "POST",
-      signal: opts.signal,
       headers: {
         "Content-Type": "application/json",
         "x-api-key": opts.provider.apiKey,
@@ -274,6 +295,7 @@ async function callAnthropic(
         ...(opts.provider.extraHeaders ?? {}),
       },
       body: JSON.stringify(body),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     },
   );
 
@@ -288,15 +310,14 @@ async function callAnthropic(
       toolCalls.push({ id: block.id, name: block.name, args: block.input });
   }
 
-  return {
-    message: {
-      id: uid(),
-      role: "assistant",
-      content: text,
-      toolCalls: toolCalls.length ? toolCalls : undefined,
-      createdAt: Date.now(),
-    },
+  const message: ChatMessage = {
+    id: uid(),
+    role: "assistant",
+    content: text,
+    createdAt: Date.now(),
   };
+  if (toolCalls.length) message.toolCalls = toolCalls;
+  return { message };
 }
 
 function trimSlash(u: string) {
@@ -359,7 +380,8 @@ function compactMessages(
   // Protect everything from the most recent user turn onwards.
   let protectFrom = messages.length;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
+    const message = messages[i];
+    if (message?.role === "user") {
       protectFrom = i;
       break;
     }
@@ -370,6 +392,7 @@ function compactMessages(
   const candidates: { idx: number; size: number }[] = [];
   for (let i = 0; i < protectFrom; i++) {
     const m = messages[i];
+    if (!m) continue;
     if (
       m.role !== "tool" ||
       m.content.length < ELIDABLE_MIN_BYTES ||
@@ -385,6 +408,7 @@ function compactMessages(
   for (const c of candidates) {
     if (totalBytes <= budgetBytes) break;
     const orig = out[c.idx];
+    if (!orig) continue;
     const toolBare = orig.toolName ?? "tool";
     const marker =
       `${ELIDED_PREFIX} from ${toolBare}: ${orig.content.length} chars omitted ` +
@@ -409,7 +433,8 @@ async function fetchWithRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
-  const res = await fetch(url, init);
+  throwIfAborted(init.signal);
+  const res = await fetchAfterForeground(url, init);
   if (res.status !== 429) return res;
 
   const body = await res.clone().text();
@@ -418,8 +443,79 @@ async function fetchWithRetry(
     5000;
   waitMs = Math.min(waitMs, 30_000);
 
-  await new Promise((r) => setTimeout(r, waitMs));
-  return fetch(url, init);
+  await abortableDelay(waitMs, init.signal);
+  return fetchAfterForeground(url, init);
+}
+
+async function fetchAfterForeground(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    const res = await fetch(url, init);
+    if (res.status >= 500 && isBackgrounded()) {
+      await waitForForeground(init.signal);
+      return fetch(url, init);
+    }
+    return res;
+  } catch (e) {
+    if (isBackgrounded() && !init.signal?.aborted) {
+      await waitForForeground(init.signal);
+      return fetch(url, init);
+    }
+    throw e;
+  }
+}
+
+function isBackgrounded(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    document.visibilityState === "hidden"
+  );
+}
+
+function waitForForeground(signal?: AbortSignal | null): Promise<void> {
+  throwIfAborted(signal);
+  if (!isBackgrounded()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onVisibilityChange = () => {
+      if (isBackgrounded()) return;
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal | null): void {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
+function abortableDelay(
+  waitMs: number,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, waitMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function parseRetryAfter(h: string | null): number | null {
@@ -432,7 +528,8 @@ function parseRetryAfter(h: string | null): number | null {
 
 function parseRetryFromBody(body: string): number | null {
   const m = body.match(/try again in ([\d.]+)s/i);
-  return m ? Math.ceil(parseFloat(m[1]) * 1000) : null;
+  const seconds = m?.[1];
+  return seconds ? Math.ceil(parseFloat(seconds) * 1000) : null;
 }
 
 function safeJson(s: string): unknown {
