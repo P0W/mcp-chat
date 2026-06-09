@@ -33,12 +33,18 @@ function db() {
 
 // Generic CRUD over an in-line-keyed object store. The store's keyPath is
 // declared once at creation (above); records carry their own key, so callers
-// never pass it explicitly on writes.
+// never pass it explicitly on writes. `add`, `update` and `remove` run inside
+// a single transaction each, so check-and-write is atomic (no lost updates).
 export interface CrudStore<T> {
   list(): Promise<T[]>;
   get(key: string): Promise<T | undefined>;
   put(value: T): Promise<void>;
-  remove(key: string): Promise<void>;
+  /** Insert a new record; rejects (ConstraintError) if the key already exists. */
+  add(value: T): Promise<void>;
+  /** Atomically read-modify-write; returns false (no write) if key is absent. */
+  update(key: string, mutator: (current: T) => T): Promise<boolean>;
+  /** Atomically delete; returns whether a record actually existed. */
+  remove(key: string): Promise<boolean>;
 }
 
 function crudStore<T>(store: string): CrudStore<T> {
@@ -52,8 +58,22 @@ function crudStore<T>(store: string): CrudStore<T> {
     async put(value) {
       await (await db()).put(store, value as object);
     },
+    async add(value) {
+      await (await db()).add(store, value as object);
+    },
+    async update(key, mutator) {
+      const tx = (await db()).transaction(store, "readwrite");
+      const current = (await tx.store.get(key)) as T | undefined;
+      if (current !== undefined) await tx.store.put(mutator(current) as object);
+      await tx.done;
+      return current !== undefined;
+    },
     async remove(key) {
-      await (await db()).delete(store, key);
+      const tx = (await db()).transaction(store, "readwrite");
+      const existed = (await tx.store.get(key)) !== undefined;
+      if (existed) await tx.store.delete(key);
+      await tx.done;
+      return existed;
     },
   };
 }
