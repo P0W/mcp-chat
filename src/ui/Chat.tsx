@@ -21,6 +21,7 @@ const SYSTEM_PROMPT = `You are connected to the user's MCP tool servers.
 
 Rules:
 - When a user asks for data any tool could provide, CALL THE TOOL. Don't announce "I will now call the tool" — just call it.
+- Choose the best tool automatically. Do not wait for the user to explicitly ask you to use a specific tool.
 - Never fabricate URLs, tokens, or data. If you need a URL (e.g. OAuth login), call the tool and quote what it returns verbatim.
 - For MCP results or local markdown/CSV/text/JSON files that need repeated filtering, joining, grouping, sorting, or summarizing, use the optional Session SQLite tools to import once, query locally with SQL, and drop/export when done.
 - If no tool fits, reply: "No available tool can do this."
@@ -34,6 +35,8 @@ Formatting:
 
 const isNative = () => Capacitor.isNativePlatform();
 const IS_NATIVE = isNative();
+const DATA_SHAPING_QUERY =
+  /\b(filter|group(?:\s+by)?|sort|order(?:\s+by)?|rank|top|bottom|aggregate|sum|avg|count|join|table|rows|csv|json|markdown|summari[sz]e|analy[sz]e|compare)\b/i;
 
 // Route a tool call to the local built-in tools or the matching MCP server.
 const runToolCall = (
@@ -47,6 +50,19 @@ const runToolCall = (
     : serverId === SQL_SERVER_ID
       ? callSessionSqlTool(name, args)
     : callTool(serverId, name, args, signal);
+
+function toolRoutingHint(messages: ChatMessage[], tools: McpTool[]): string {
+  const hasSql = tools.some((t) => t.serverId === SQL_SERVER_ID);
+  if (!hasSql) return "";
+  const latestUser = [...messages].reverse().find((m) => m.role === "user");
+  if (!latestUser || !DATA_SHAPING_QUERY.test(latestUser.content)) return "";
+  return `
+
+Routing hint for this turn:
+- This request looks like data shaping; prefer Session SQLite tools first.
+- Import source data to SQLite and run SQL for filtering, joins, grouping, sorting, and summaries.
+- Do not ask the user to request SQL explicitly when it improves accuracy.`;
+}
 
 export default function Chat({
   hasProvider,
@@ -217,7 +233,7 @@ export default function Chat({
         const working = [...current.messages];
         await runChat({
           provider,
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt: `${SYSTEM_PROMPT}${toolRoutingHint(working, tools)}`,
           messages: working,
           tools,
           runner: { call: runToolCall },
