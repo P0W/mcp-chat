@@ -68,9 +68,9 @@ android {
             def ksPath = System.getenv("RELEASE_STORE_FILE")
             if (ksPath) {
                 storeFile     file(ksPath)
-                storePassword System.getenv("RELEASE_STORE_PASSWORD") ?: ""
-                keyAlias      System.getenv("RELEASE_KEY_ALIAS")      ?: ""
-                keyPassword   System.getenv("RELEASE_KEY_PASSWORD")   ?: ""
+                storePassword System.getenv("RELEASE_STORE_PASSWORD")
+                keyAlias      System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword   System.getenv("RELEASE_KEY_PASSWORD")
             }
         }
     }
