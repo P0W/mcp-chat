@@ -30,13 +30,8 @@ interface SqlJsStatic {
   Database: new (data?: ArrayLike<number> | null) => SqlDatabase;
 }
 
-interface StoredDb {
-  db: SqlDatabase;
-  updatedAt: number;
-}
-
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
-const databases = new Map<string, StoredDb>();
+const databases = new Map<string, SqlDatabase>();
 
 function schema(properties: object, required: string[]): object {
   return { type: "object", properties, required };
@@ -52,6 +47,12 @@ function optionalString(args: Args, key: string, fallback = ""): string {
 function nonEmptyString(args: Args, key: string): string {
   const value = optionalString(args, key).trim();
   if (!value) throw new Error(`"${key}" must be a non-empty string`);
+  return value;
+}
+
+function definedString(args: Args, key: string): string {
+  const value = args[key];
+  if (typeof value !== "string") throw new Error(`"${key}" must be a string`);
   return value;
 }
 
@@ -115,19 +116,11 @@ async function sqlJs(): Promise<SqlJsStatic> {
 
 async function getDb(name: string): Promise<SqlDatabase> {
   const current = databases.get(name);
-  if (current) {
-    current.updatedAt = Date.now();
-    return current.db;
-  }
+  if (current) return current;
   const SQL = await sqlJs();
   const db = new SQL.Database();
-  databases.set(name, { db, updatedAt: Date.now() });
+  databases.set(name, db);
   return db;
-}
-
-function markUpdated(name: string): void {
-  const current = databases.get(name);
-  if (current) current.updatedAt = Date.now();
 }
 
 function resultRows(result: QueryResult, maxRows: number): Record<string, Cell>[] {
@@ -402,11 +395,11 @@ export function createSessionSqlTools(): ToolDef[] {
         const db = await getDb(name);
         const before = db.exec("SELECT total_changes() AS changes")[0]?.values[0]?.[0] ?? 0;
         const results = db.exec(sql, sqlParams(args));
-        if (hasWrites(sql)) markUpdated(name);
         const after = db.exec("SELECT total_changes() AS changes")[0]?.values[0]?.[0] ?? before;
         const maxRows = normalizeLimit(args);
         return serialize({
           db: name,
+          changed_database: hasWrites(sql),
           rows_modified: Number(after) - Number(before),
           result_sets: results.map((result) => ({
             columns: result.columns,
@@ -446,7 +439,7 @@ export function createSessionSqlTools(): ToolDef[] {
       async handler(args) {
         const name = dbName(args);
         const table = nonEmptyString(args, "table");
-        const data = nonEmptyString(args, "data");
+        const data = definedString(args, "data");
         if (data.length > MAX_IMPORT_BYTES)
           throw new Error(`Import data exceeds ${MAX_IMPORT_BYTES} characters`);
         const requested = optionalString(args, "kind", "auto") as ImportKind;
@@ -458,7 +451,6 @@ export function createSessionSqlTools(): ToolDef[] {
           throw new Error(`Import has ${parsed.rows.length} rows; limit is ${MAX_IMPORT_ROWS}`);
         const db = await getDb(name);
         importRows(db, table, parsed.columns, parsed.rows, args.replace !== false);
-        markUpdated(name);
         return serialize({
           db: name,
           table,
@@ -511,7 +503,7 @@ export function createSessionSqlTools(): ToolDef[] {
         const name = dbName(args);
         const db = await getDb(name);
         const bytes = db.export();
-        return serialize({ db: name, bytes: bytes.length, base64: bytesToBase64(bytes) });
+        return JSON.stringify({ db: name, bytes: bytes.length, base64: bytesToBase64(bytes) });
       },
     },
     {
@@ -537,8 +529,8 @@ export function createSessionSqlTools(): ToolDef[] {
         const SQL = await sqlJs();
         const previous = databases.get(name);
         const next = new SQL.Database(base64ToBytes(nonEmptyString(args, "base64")));
-        previous?.db.close();
-        databases.set(name, { db: next, updatedAt: Date.now() });
+        previous?.close();
+        databases.set(name, next);
         return `Loaded database "${name}".`;
       },
     },
@@ -555,7 +547,7 @@ export function createSessionSqlTools(): ToolDef[] {
       ),
       async handler(args) {
         if (args.all === true) {
-          for (const stored of databases.values()) stored.db.close();
+          for (const db of databases.values()) db.close();
           const count = databases.size;
           databases.clear();
           return `Dropped ${count} session database${count === 1 ? "" : "s"}.`;
@@ -563,7 +555,7 @@ export function createSessionSqlTools(): ToolDef[] {
         const name = dbName(args);
         const stored = databases.get(name);
         if (!stored) return `Database "${name}" did not exist.`;
-        stored.db.close();
+        stored.close();
         databases.delete(name);
         return `Dropped database "${name}".`;
       },
