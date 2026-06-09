@@ -3,6 +3,7 @@ import { Capacitor } from "@capacitor/core";
 import { Chats, Mcps, Meta, Providers, uid } from "../db";
 import { runChat, type CompactInfo } from "../llm";
 import { callTool, connect, listLoadedTools } from "../mcp";
+import { LOCAL_SERVER_ID, callLocalTool, localTools } from "../localTools";
 import type {
   Chat as ChatT,
   ChatMessage,
@@ -28,6 +29,12 @@ Formatting:
 const isNative = () => Capacitor.isNativePlatform();
 const IS_NATIVE = isNative();
 
+// Route a tool call to the local built-in tools or the matching MCP server.
+const runToolCall = (serverId: string, name: string, args: unknown) =>
+  serverId === LOCAL_SERVER_ID
+    ? callLocalTool(name, args)
+    : callTool(serverId, name, args);
+
 export default function Chat({
   hasProvider,
   goSettings,
@@ -37,7 +44,7 @@ export default function Chat({
 }) {
   const [chat, setChat] = useState<ChatT | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [tools, setTools] = useState<McpTool[]>([]);
+  const [tools, setTools] = useState<McpTool[]>(localTools);
   const [mcpErrors, setMcpErrors] = useState<{ name: string; msg: string }[]>(
     [],
   );
@@ -73,7 +80,7 @@ export default function Chat({
 
   async function loadAllTools() {
     const servers = (await Mcps.list()).filter((s) => s.enabled);
-    const all: McpTool[] = [];
+    const all: McpTool[] = [...localTools];
     const errs: { name: string; msg: string }[] = [];
     for (const s of servers) {
       try {
@@ -140,7 +147,7 @@ export default function Chat({
         systemPrompt: SYSTEM_PROMPT,
         messages: working,
         tools,
-        runner: { call: callTool },
+        runner: { call: runToolCall },
         signal: controller.signal,
         onAssistant: (m) =>
           setChat((c) => (c ? { ...c, messages: [...c.messages, m] } : c)),
@@ -300,7 +307,7 @@ export default function Chat({
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 space-y-3">
         {chat?.messages.length === 0 && (
           <div className="text-center text-sm text-neutral-500 mt-12">
-            {tools.length} MCP tool{tools.length === 1 ? "" : "s"} available.
+            {tools.length} tool{tools.length === 1 ? "" : "s"} available.
             Ask anything.
           </div>
         )}

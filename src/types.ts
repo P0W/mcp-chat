@@ -68,3 +68,10 @@ export interface McpTool {
   description?: string;
   inputSchema: unknown;
 }
+
+export interface StoredFile {
+  name: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
