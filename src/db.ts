@@ -63,10 +63,16 @@ function crudStore<T>(store: string): CrudStore<T> {
     },
     async update(key, mutator) {
       const tx = (await db()).transaction(store, "readwrite");
-      const current = (await tx.store.get(key)) as T | undefined;
-      if (current !== undefined) await tx.store.put(mutator(current) as object);
-      await tx.done;
-      return current !== undefined;
+      try {
+        const current = (await tx.store.get(key)) as T | undefined;
+        if (current === undefined) return false;
+        await tx.store.put(mutator(current) as object);
+        return true;
+      } finally {
+        // Always settle the transaction, even if `mutator` throws, so a
+        // failing caller can never leave it dangling.
+        await tx.done;
+      }
     },
     async remove(key) {
       const tx = (await db()).transaction(store, "readwrite");
