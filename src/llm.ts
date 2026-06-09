@@ -249,8 +249,8 @@ async function callOpenAICompatible(opts: RunOptions): Promise<LlmCallResult> {
     role: "assistant",
     content: choice.content ?? "",
     createdAt: Date.now(),
+    ...(toolCalls?.length ? { toolCalls } : {}),
   };
-  if (toolCalls) message.toolCalls = toolCalls;
   return { message };
 }
 
@@ -327,8 +327,8 @@ async function callMessagesCompatible(
     role: "assistant",
     content: text,
     createdAt: Date.now(),
+    ...(toolCalls.length ? { toolCalls } : {}),
   };
-  if (toolCalls.length) message.toolCalls = toolCalls;
   return { message };
 }
 
