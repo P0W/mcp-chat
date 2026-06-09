@@ -80,7 +80,11 @@ function identifier(name: string): string {
     throw new Error(
       "Table and column names must start with a letter or underscore and contain only letters, numbers, and underscores",
     );
-  return `"${trimmed.replaceAll('"', '""')}"`;
+  return quoteIdentifier(trimmed);
+}
+
+function quoteIdentifier(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
 }
 
 function uniqueColumns(raw: string[]): string[] {
@@ -89,7 +93,7 @@ function uniqueColumns(raw: string[]): string[] {
     const base = sanitizeColumn(name) || `col_${idx + 1}`;
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
-    return count === 0 ? base : `${base}_${count + 1}`;
+    return count === 0 ? base : `${base}_${count}`;
   });
 }
 
@@ -208,6 +212,10 @@ function parseCsv(data: string): string[][] {
   let row: string[] = [];
   let cell = "";
   let quoted = false;
+  let line = 1;
+  let column = 1;
+  let quoteLine = 1;
+  let quoteColumn = 1;
   for (let i = 0; i < data.length; i++) {
     const ch = data[i]!;
     const next = data[i + 1];
@@ -215,6 +223,7 @@ function parseCsv(data: string): string[][] {
       if (ch === '"' && next === '"') {
         cell += '"';
         i++;
+        column++;
       } else if (ch === '"') {
         quoted = false;
       } else {
@@ -222,6 +231,8 @@ function parseCsv(data: string): string[][] {
       }
     } else if (ch === '"') {
       quoted = true;
+      quoteLine = line;
+      quoteColumn = column;
     } else if (ch === ",") {
       row.push(cell);
       cell = "";
@@ -233,8 +244,17 @@ function parseCsv(data: string): string[][] {
     } else {
       cell += ch;
     }
+    if (ch === "\n") {
+      line++;
+      column = 1;
+    } else {
+      column++;
+    }
   }
-  if (quoted) throw new Error("CSV contains an unterminated quoted field");
+  if (quoted)
+    throw new Error(
+      `CSV contains an unterminated quoted field starting at line ${quoteLine}, column ${quoteColumn}`,
+    );
   if (cell.length || row.length) {
     row.push(cell.replace(/\r$/, ""));
     rows.push(row);
@@ -305,8 +325,9 @@ function jsonToCell(value: unknown): Cell {
 function parseRows(data: string, kind: ImportKind): { columns: string[]; rows: Cell[][] } {
   if (kind === "json") return parseJsonRows(data);
   if (kind === "text") {
+    if (data.length === 0) return { columns: ["line_number", "content"], rows: [] };
     return {
-      columns: ["line_no", "content"],
+      columns: ["line_number", "content"],
       rows: data.split(/\r?\n/).map((line, idx) => [idx + 1, line]),
     };
   }
@@ -339,13 +360,34 @@ function importRows(
     if (replace) db.run(`DROP TABLE IF EXISTS ${table}`);
     db.run(
       `CREATE TABLE IF NOT EXISTS ${table} (${quotedColumns
-        .map((col) => `${col} TEXT`)
+        .map((col, idx) => `${col} ${columnType(rows, idx)}`)
         .join(", ")})`,
     );
     if (rows.length) {
       const placeholders = columns.map(() => "?").join(", ");
       const sql = `INSERT INTO ${table} (${quotedColumns.join(", ")}) VALUES (${placeholders})`;
       rows.forEach((row) => db.run(sql, row));
+    }
+
+    function columnType(rows: Cell[][], column: number): "BLOB" | "INTEGER" | "REAL" | "TEXT" {
+      let numeric = false;
+      let real = false;
+      let blob = false;
+      for (const row of rows) {
+        const value = row[column];
+        if (value === null || value === undefined) continue;
+        if (typeof value === "number") {
+          numeric = true;
+          if (!Number.isInteger(value)) real = true;
+        } else if (value instanceof Uint8Array) {
+          blob = true;
+        } else {
+          return "TEXT";
+        }
+      }
+      if (blob) return numeric ? "TEXT" : "BLOB";
+      if (real) return "REAL";
+      return numeric ? "INTEGER" : "TEXT";
     }
     db.run("COMMIT");
   } catch (e) {
@@ -431,7 +473,8 @@ export function createSessionSqlTools(): ToolDef[] {
           },
           replace: {
             type: "boolean",
-            description: "Drop and recreate the table first. Defaults to true.",
+            description:
+              "Drop and recreate the table first. Defaults to false; set true to overwrite existing data.",
           },
         },
         ["table", "data"],
@@ -450,7 +493,7 @@ export function createSessionSqlTools(): ToolDef[] {
         if (parsed.rows.length > MAX_IMPORT_ROWS)
           throw new Error(`Import has ${parsed.rows.length} rows; limit is ${MAX_IMPORT_ROWS}`);
         const db = await getDb(name);
-        importRows(db, table, parsed.columns, parsed.rows, args.replace !== false);
+        importRows(db, table, parsed.columns, parsed.rows, args.replace === true);
         return serialize({
           db: name,
           table,
@@ -480,7 +523,7 @@ export function createSessionSqlTools(): ToolDef[] {
           tables: tables.map((table) => ({
             name: table,
             columns:
-              db.exec(`PRAGMA table_info(${identifier(table)})`)[0]?.values.map((row) => ({
+              db.exec(`PRAGMA table_info(${quoteIdentifier(table)})`)[0]?.values.map((row) => ({
                 name: row[1],
                 type: row[2],
                 not_null: row[3],
@@ -516,14 +559,15 @@ export function createSessionSqlTools(): ToolDef[] {
           base64: { type: "string", description: "Base64 database bytes from sql_export_db." },
           replace: {
             type: "boolean",
-            description: "Replace an existing in-memory database. Defaults to true.",
+            description:
+              "Replace an existing in-memory database. Defaults to false; set true to overwrite it.",
           },
         },
         ["base64"],
       ),
       async handler(args) {
         const name = dbName(args);
-        const replace = args.replace !== false;
+        const replace = args.replace === true;
         if (!replace && databases.has(name))
           throw new Error(`Database "${name}" already exists`);
         const SQL = await sqlJs();
