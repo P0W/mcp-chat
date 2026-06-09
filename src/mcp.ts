@@ -54,6 +54,7 @@ async function rpc<T>(
   method: string,
   params?: unknown,
   notify = false,
+  signal?: AbortSignal,
 ): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -75,6 +76,7 @@ async function rpc<T>(
     method: "POST",
     headers,
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   });
 
   if (res.status === 401 && cfg.auth === "oauth") {
@@ -89,41 +91,53 @@ async function rpc<T>(
 
   const ctype = res.headers.get("content-type") ?? "";
   if (ctype.includes("text/event-stream")) {
-    return readSseResponse<T>(res, body.id as number);
+    return readSseResponse<T>(res, body.id as number, signal);
   }
   const json = await res.json();
   if (json.error) throw new Error(`MCP error: ${json.error.message}`);
   return json.result as T;
 }
 
-async function readSseResponse<T>(res: Response, wantId: number): Promise<T> {
+async function readSseResponse<T>(
+  res: Response,
+  wantId: number,
+  signal?: AbortSignal,
+): Promise<T> {
   const reader = res.body!.getReader();
+  const abort = () => void reader.cancel("aborted");
+  signal?.addEventListener("abort", abort, { once: true });
   const decoder = new TextDecoder();
   let buf = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const events = buf.split("\n\n");
-    buf = events.pop() ?? "";
-    for (const evt of events) {
-      const dataLines = evt
-        .split("\n")
-        .filter((l) => l.startsWith("data:"))
-        .map((l) => l.slice(5).trimStart());
-      if (!dataLines.length) continue;
-      try {
-        const json = JSON.parse(dataLines.join("\n"));
-        if (json.id === wantId) {
-          if (json.error) throw new Error(`MCP error: ${json.error.message}`);
-          return json.result as T;
+  try {
+    while (true) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop() ?? "";
+      for (const evt of events) {
+        const dataLines = evt
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.slice(5).trimStart());
+        if (!dataLines.length) continue;
+        try {
+          const json = JSON.parse(dataLines.join("\n"));
+          if (json.id === wantId) {
+            if (json.error) throw new Error(`MCP error: ${json.error.message}`);
+            return json.result as T;
+          }
+        } catch (e) {
+          if (e instanceof SyntaxError) continue;
+          throw e;
         }
-      } catch (e) {
-        if (e instanceof SyntaxError) continue;
-        throw e;
       }
     }
+  } finally {
+    signal?.removeEventListener("abort", abort);
   }
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   throw new Error("MCP: stream ended without response");
 }
 
@@ -153,7 +167,7 @@ export async function connect(cfg: McpServerConfig): Promise<McpTool[]> {
     serverId: cfg.id,
     serverName: cfg.name,
     name: t.name,
-    description: t.description,
+    ...(t.description ? { description: t.description } : {}),
     inputSchema: t.inputSchema,
   }));
   return session.tools;
@@ -163,6 +177,7 @@ export async function callTool(
   serverId: string,
   name: string,
   args: unknown,
+  signal?: AbortSignal,
 ): Promise<string> {
   const cfg = await Mcps.get(serverId);
   if (!cfg) throw new Error(`MCP server ${serverId} not found`);
@@ -176,7 +191,7 @@ export async function callTool(
   const result = await rpc<{
     content?: { type: string; text?: string }[];
     isError?: boolean;
-  }>(cfg, session, "tools/call", { name, arguments: args ?? {} });
+  }>(cfg, session, "tools/call", { name, arguments: args ?? {} }, false, signal);
 
   const parts = (result.content ?? [])
     .map((c) => (c.type === "text" ? (c.text ?? "") : JSON.stringify(c)))
