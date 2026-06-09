@@ -4,6 +4,11 @@ import { Chats, Mcps, Meta, Providers, uid } from "../db";
 import { runChat, type CompactInfo } from "../llm";
 import { callTool, connect, listLoadedTools } from "../mcp";
 import { LOCAL_SERVER_ID, callLocalTool, localTools } from "../localTools";
+import {
+  SQL_SERVER_ID,
+  callSessionSqlTool,
+  sessionSqlTools,
+} from "../sessionSqlTools";
 import type {
   Chat as ChatT,
   ChatMessage,
@@ -17,6 +22,7 @@ const SYSTEM_PROMPT = `You are connected to the user's MCP tool servers.
 Rules:
 - When a user asks for data any tool could provide, CALL THE TOOL. Don't announce "I will now call the tool" — just call it.
 - Never fabricate URLs, tokens, or data. If you need a URL (e.g. OAuth login), call the tool and quote what it returns verbatim.
+- For large or reusable data from MCP results or local markdown/CSV/text/JSON files, use the optional Session SQLite tools to import once, query with SQL, and drop/export when done.
 - If no tool fits, reply: "No available tool can do this."
 
 Formatting:
@@ -38,6 +44,8 @@ const runToolCall = (
 ) =>
   serverId === LOCAL_SERVER_ID
     ? callLocalTool(name, args)
+    : serverId === SQL_SERVER_ID
+      ? callSessionSqlTool(name, args)
     : callTool(serverId, name, args, signal);
 
 export default function Chat({
@@ -49,7 +57,10 @@ export default function Chat({
 }) {
   const [chat, setChat] = useState<ChatT | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [tools, setTools] = useState<McpTool[]>(localTools);
+  const [tools, setTools] = useState<McpTool[]>([
+    ...localTools,
+    ...sessionSqlTools,
+  ]);
   const [mcpErrors, setMcpErrors] = useState<{ name: string; msg: string }[]>(
     [],
   );
@@ -121,7 +132,7 @@ export default function Chat({
 
   async function loadAllTools() {
     const servers = (await Mcps.list()).filter((s) => s.enabled);
-    const all: McpTool[] = [...localTools];
+    const all: McpTool[] = [...localTools, ...sessionSqlTools];
     const errs: { name: string; msg: string }[] = [];
     for (const s of servers) {
       try {
