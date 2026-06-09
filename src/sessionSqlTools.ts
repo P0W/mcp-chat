@@ -7,9 +7,11 @@ const DEFAULT_DB = "default";
 const MAX_IMPORT_BYTES = 2_000_000;
 const MAX_IMPORT_ROWS = 20_000;
 const MAX_DB_IMPORT_BYTES = 8_000_000;
+const MAX_DB_EXPORT_BYTES = 512_000;
 const DEFAULT_MAX_ROWS = 200;
 const MAX_RESULT_ROWS = 1_000;
 const MAX_RESULT_CHARS = 60_000;
+const BASE64_CHUNK_SIZE = 0x8000;
 
 type Args = Record<string, unknown>;
 type Cell = number | string | Uint8Array | null;
@@ -30,6 +32,12 @@ interface SqlDatabase {
 interface SqlJsStatic {
   Database: new (data?: ArrayLike<number> | null) => SqlDatabase;
 }
+
+interface SqlJsModule {
+  default?: InitSqlJs;
+}
+
+type InitSqlJs = (config: { locateFile: () => string }) => Promise<SqlJsStatic>;
 
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
 const databases = new Map<string, SqlDatabase>();
@@ -86,7 +94,7 @@ function identifier(name: string): string {
 }
 
 function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
+  return `"${name.replace(/"/g, '""')}"`;
 }
 
 function uniqueColumns(raw: string[]): string[] {
@@ -110,10 +118,9 @@ function sanitizeColumn(name: string): string {
 
 async function sqlJs(): Promise<SqlJsStatic> {
   if (!sqlJsPromise) {
-    sqlJsPromise = import("sql.js").then((mod) => {
-      const init = (
-        "default" in mod ? mod.default : mod
-      ) as unknown as (config: { locateFile: () => string }) => Promise<SqlJsStatic>;
+    sqlJsPromise = import("sql.js").then((mod: SqlJsModule | InitSqlJs) => {
+      const init = typeof mod === "function" ? mod : mod.default;
+      if (!init) throw new Error("sql.js initializer not found");
       return init({ locateFile: () => wasmUrl });
     });
   }
@@ -389,27 +396,6 @@ function importRows(
       const sql = `INSERT INTO ${table} (${quotedColumns.join(", ")}) VALUES (${placeholders})`;
       rows.forEach((row) => db.run(sql, row));
     }
-
-    function columnType(rows: Cell[][], column: number): "BLOB" | "INTEGER" | "REAL" | "TEXT" {
-      let numeric = false;
-      let real = false;
-      let blob = false;
-      for (const row of rows) {
-        const value = row[column];
-        if (value === null || value === undefined) continue;
-        if (typeof value === "number") {
-          numeric = true;
-          if (!Number.isInteger(value)) real = true;
-        } else if (value instanceof Uint8Array) {
-          blob = true;
-        } else {
-          return "TEXT";
-        }
-      }
-      if (blob) return numeric ? "TEXT" : "BLOB";
-      if (real) return "REAL";
-      return numeric ? "INTEGER" : "TEXT";
-    }
     db.run("COMMIT");
   } catch (e) {
     db.run("ROLLBACK");
@@ -417,10 +403,31 @@ function importRows(
   }
 }
 
+function columnType(rows: Cell[][], column: number): "BLOB" | "INTEGER" | "REAL" | "TEXT" {
+  let numeric = false;
+  let real = false;
+  let blob = false;
+  for (const row of rows) {
+    const value = row[column];
+    if (value === null || value === undefined) continue;
+    if (typeof value === "number") {
+      numeric = true;
+      if (!Number.isInteger(value)) real = true;
+    } else if (value instanceof Uint8Array) {
+      blob = true;
+    } else {
+      return "TEXT";
+    }
+  }
+  if (blob) return numeric ? "TEXT" : "BLOB";
+  if (real) return "REAL";
+  return numeric ? "INTEGER" : "TEXT";
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  for (let i = 0; i < bytes.length; i += BASE64_CHUNK_SIZE) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + BASE64_CHUNK_SIZE));
   }
   return btoa(binary);
 }
@@ -549,13 +556,22 @@ export function createSessionSqlTools(): ToolDef[] {
           tables: tables.map((table) => ({
             name: table,
             columns:
-              db.exec(`PRAGMA table_info(${quoteIdentifier(table)})`)[0]?.values.map((row) => ({
-                name: row[1],
-                type: row[2],
-                not_null: row[3],
-                default_value: row[4],
-                primary_key: row[5],
-              })) ?? [],
+              db.exec(`PRAGMA table_info(${quoteIdentifier(table)})`)[0]?.values.map(
+                ([
+                  _columnId,
+                  columnName,
+                  columnType,
+                  notNull,
+                  defaultValue,
+                  primaryKey,
+                ]) => ({
+                  name: columnName,
+                  type: columnType,
+                  not_null: notNull,
+                  default_value: defaultValue,
+                  primary_key: primaryKey,
+                }),
+              ) ?? [],
           })),
         });
       },
@@ -572,6 +588,10 @@ export function createSessionSqlTools(): ToolDef[] {
         const name = dbName(args);
         const db = await getDb(name);
         const bytes = db.export();
+        if (bytes.length > MAX_DB_EXPORT_BYTES)
+          throw new Error(
+            `Database export is ${bytes.length} bytes; inline export limit is ${MAX_DB_EXPORT_BYTES} bytes`,
+          );
         return JSON.stringify({ db: name, bytes: bytes.length, base64: bytesToBase64(bytes) });
       },
     },
@@ -594,8 +614,8 @@ export function createSessionSqlTools(): ToolDef[] {
       async handler(args) {
         const name = dbName(args);
         const replace = args.replace === true;
-        if (!replace && databases.has(name))
-          throw new Error(`Database "${name}" already exists`);
+        if (!replace && (databases.has(name) || pendingDatabases.has(name)))
+          throw new Error(`Database "${name}" already exists or is being created`);
         const SQL = await sqlJs();
         const previous = databases.get(name);
         const next = new SQL.Database(base64ToBytes(nonEmptyString(args, "base64")));
