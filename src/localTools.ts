@@ -3,6 +3,7 @@ import {
   Encoding,
   Filesystem,
   type FileInfo,
+  type StatResult,
 } from "@capacitor/filesystem";
 import { createToolRegistry, type ToolDef } from "./toolRegistry";
 
@@ -54,11 +55,13 @@ function normalizePath(path: string): string {
 
 function ensureInsideRoot(path: string): string {
   const rel = path.startsWith("/") ? path.slice(1) : path;
+  const segments = rel.split("/");
   if (
     rel.length === 0 ||
     rel === "." ||
     rel === ".." ||
-    rel.startsWith("../")
+    rel.startsWith("../") ||
+    segments.some((seg) => seg.length === 0 || seg === "." || seg === "..")
   ) {
     throw new Error("Path must point inside storage root");
   }
@@ -97,7 +100,8 @@ function isNotFoundError(error: unknown): boolean {
   );
 }
 
-async function statOrNull(relPath: string) {
+/** Return file stat if present; return null for missing files, rethrow otherwise. */
+async function getFileStatOrNull(relPath: string): Promise<StatResult | null> {
   try {
     return await Filesystem.stat({
       path: storagePath(relPath),
@@ -109,6 +113,7 @@ async function statOrNull(relPath: string) {
   }
 }
 
+/** Join two POSIX path parts while handling an empty base path. */
 function joinPath(base: string, name: string): string {
   return base.length ? `${base}/${name}` : name;
 }
@@ -117,6 +122,7 @@ function summarize(path: string, f: FileInfo): string {
   return `${asDisplayPath(path)} (${f.size} bytes)`;
 }
 
+/** Recursively list files (not directories) under the given directory path. */
 async function listFilesRecursive(dirRelPath: string): Promise<FileInfo[]> {
   const out: FileInfo[] = [];
   const stack: string[] = [dirRelPath];
@@ -144,6 +150,7 @@ async function listFilesRecursive(dirRelPath: string): Promise<FileInfo[]> {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Read a UTF-8 file, normalizing native/web plugin return types to string. */
 async function readUtf8File(relPath: string): Promise<string> {
   const data = (
     await Filesystem.readFile({
@@ -152,7 +159,9 @@ async function readUtf8File(relPath: string): Promise<string> {
       encoding: Encoding.UTF8,
     })
   ).data;
-  return typeof data === "string" ? data : await data.text();
+  if (typeof data === "string") return data;
+  if (data instanceof Blob) return await data.text();
+  throw new Error("Unexpected file payload type");
 }
 
 const NAME_PROP = {
@@ -189,15 +198,16 @@ export function createFileTools(): ToolDef[] {
       async handler(args) {
         const path = resolvePath(nonEmptyString(args, "name"));
         const content = optionalString(args, "content");
-        if (await statOrNull(path)) throw new Error(`File "${asDisplayPath(path)}" already exists`);
-        const result = await Filesystem.writeFile({
+        if (await getFileStatOrNull(path))
+          throw new Error(`File "${asDisplayPath(path)}" already exists`);
+        await Filesystem.writeFile({
           path: storagePath(path),
           directory: Directory.Documents,
           data: content,
           encoding: Encoding.UTF8,
           recursive: true,
         });
-        return `Created ${asDisplayPath(path)} (${content.length} chars).\nDevice URI: ${result.uri}`;
+        return `Created ${asDisplayPath(path)} (${content.length} chars) in /Documents/${ROOT_DIR}.`;
       },
     },
     {
@@ -206,7 +216,7 @@ export function createFileTools(): ToolDef[] {
       inputSchema: schema({ ...NAME_PROP }, ["name"]),
       async handler(args) {
         const path = resolvePath(nonEmptyString(args, "name"));
-        if (!(await statOrNull(path)))
+        if (!(await getFileStatOrNull(path)))
           throw new Error(`File "${asDisplayPath(path)}" not found`);
         return readUtf8File(path);
       },
@@ -219,16 +229,16 @@ export function createFileTools(): ToolDef[] {
       async handler(args) {
         const path = resolvePath(nonEmptyString(args, "name"));
         const content = definedString(args, "content");
-        if (!(await statOrNull(path)))
+        if (!(await getFileStatOrNull(path)))
           throw new Error(`File "${asDisplayPath(path)}" not found`);
-        const result = await Filesystem.writeFile({
+        await Filesystem.writeFile({
           path: storagePath(path),
           directory: Directory.Documents,
           data: content,
           encoding: Encoding.UTF8,
           recursive: true,
         });
-        return `Updated ${asDisplayPath(path)} (${content.length} chars).\nDevice URI: ${result.uri}`;
+        return `Updated ${asDisplayPath(path)} (${content.length} chars) in /Documents/${ROOT_DIR}.`;
       },
     },
     {
@@ -237,7 +247,7 @@ export function createFileTools(): ToolDef[] {
       inputSchema: schema({ ...NAME_PROP }, ["name"]),
       async handler(args) {
         const path = resolvePath(nonEmptyString(args, "name"));
-        if (!(await statOrNull(path)))
+        if (!(await getFileStatOrNull(path)))
           throw new Error(`File "${asDisplayPath(path)}" not found`);
         await Filesystem.deleteFile({
           path: storagePath(path),
