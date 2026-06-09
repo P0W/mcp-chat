@@ -1,4 +1,10 @@
-import type { ChatMessage, McpTool, ProviderConfig, ToolCall } from "./types";
+import type {
+  ChatMessage,
+  LlmProtocol,
+  McpTool,
+  ProviderConfig,
+  ToolCall,
+} from "./types";
 
 export interface ToolRunner {
   call(
@@ -34,6 +40,7 @@ export interface CompactInfo {
 // Conservative default — fits Llama 4 Scout (32k), modest for everyone else.
 // Per-provider override later via provider.contextLimit if needed.
 const DEFAULT_BUDGET_TOKENS = 28_000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
 const CHARS_PER_TOKEN = 4;
 const ELIDABLE_MIN_BYTES = 500;
 const ELIDED_PREFIX = "[Elided tool result";
@@ -42,6 +49,13 @@ const TOOL_NAME_RE = /[^a-zA-Z0-9_-]/g;
 const TOOL_KEY_MAX = 64;
 // Fixed-width base36 FNV-1a hash (32-bit → at most 7 base36 chars).
 const TOOL_KEY_HASH_LEN = 7;
+type LlmCallResult = { message: ChatMessage };
+type ProtocolCaller = (opts: RunOptions) => Promise<LlmCallResult>;
+
+const PROTOCOL_CALLERS: Record<LlmProtocol, ProtocolCaller> = {
+  openai: callOpenAICompatible,
+  anthropic: callMessagesCompatible,
+};
 
 // FNV-1a (32-bit), returned as zero-padded base36 so the discriminator is a
 // fixed width that depends on the *entire* input, not a truncated prefix.
@@ -96,10 +110,7 @@ export async function runChat(opts: RunOptions): Promise<void> {
     if (compact.elided > 0 && opts.onCompact) opts.onCompact(compact);
 
     const callOpts: RunOptions = { ...opts, messages: compact.messages };
-    const result =
-      opts.provider.protocol === "anthropic"
-        ? await callAnthropic(callOpts)
-        : await callOpenAI(callOpts);
+    const result = await PROTOCOL_CALLERS[opts.provider.protocol](callOpts);
 
     opts.onAssistant(result.message);
     opts.messages.push(result.message);
@@ -170,7 +181,7 @@ function buildToolDefs(tools: McpTool[], protocol: "openai" | "anthropic") {
   }));
 }
 
-async function callOpenAI(opts: RunOptions): Promise<{ message: ChatMessage }> {
+async function callOpenAICompatible(opts: RunOptions): Promise<LlmCallResult> {
   const oaiMessages: unknown[] = [];
   if (opts.systemPrompt)
     oaiMessages.push({ role: "system", content: opts.systemPrompt });
@@ -200,6 +211,7 @@ async function callOpenAI(opts: RunOptions): Promise<{ message: ChatMessage }> {
   const body: Record<string, unknown> = {
     model: opts.provider.model,
     messages: oaiMessages,
+    max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
   };
   if (opts.tools.length)
     body.tools = buildToolDefs(opts.tools, "openai");
@@ -242,9 +254,9 @@ async function callOpenAI(opts: RunOptions): Promise<{ message: ChatMessage }> {
   return { message };
 }
 
-async function callAnthropic(
+async function callMessagesCompatible(
   opts: RunOptions,
-): Promise<{ message: ChatMessage }> {
+): Promise<LlmCallResult> {
   const aMessages: unknown[] = [];
   for (const m of opts.messages) {
     if (m.role === "system") continue;
@@ -278,7 +290,7 @@ async function callAnthropic(
   const body: Record<string, unknown> = {
     model: opts.provider.model,
     messages: aMessages,
-    max_tokens: 4096,
+    max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
   };
   if (opts.systemPrompt) body.system = opts.systemPrompt;
   if (opts.tools.length) body.tools = buildToolDefs(opts.tools, "anthropic");
