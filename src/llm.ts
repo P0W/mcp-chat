@@ -40,7 +40,6 @@ export interface CompactInfo {
 // Conservative default — fits Llama 4 Scout (32k), modest for everyone else.
 // Per-provider override later via provider.contextLimit if needed.
 const DEFAULT_BUDGET_TOKENS = 28_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
 const CHARS_PER_TOKEN = 4;
 const ELIDABLE_MIN_BYTES = 500;
 const ELIDED_PREFIX = "[Elided tool result";
@@ -213,7 +212,6 @@ async function callChatCompletionsProtocol(
   const body: Record<string, unknown> = {
     model: opts.provider.model,
     messages: oaiMessages,
-    max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
   };
   if (opts.tools.length)
     body.tools = buildToolDefs(opts.tools, "openai");
@@ -292,7 +290,7 @@ async function callMessagesApiProtocol(
   const body: Record<string, unknown> = {
     model: opts.provider.model,
     messages: aMessages,
-    max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    max_tokens: 4096,
   };
   if (opts.systemPrompt) body.system = opts.systemPrompt;
   if (opts.tools.length) body.tools = buildToolDefs(opts.tools, "anthropic");
