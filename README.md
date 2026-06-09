@@ -1,5 +1,7 @@
 # MCP Chat
 
+Author: Prashant Srivastava
+
 A minimal, mobile-friendly chat app that talks to any LLM and any
 Streamable-HTTP MCP server. Built with Vite + React + TypeScript + Tailwind,
 bundled for Android via Capacitor.

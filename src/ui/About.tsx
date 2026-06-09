@@ -25,6 +25,10 @@ export default function About() {
             <span className="text-neutral-500">Built at:</span>{" "}
             {formatDateTime(buildDate)}
           </p>
+          <p>
+            <span className="text-neutral-500">Author:</span> Prashant
+            Srivastava
+          </p>
           <p className="text-xs text-neutral-500 break-all">
             {__BUILD_TIME__}
           </p>
