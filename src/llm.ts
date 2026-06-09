@@ -53,8 +53,8 @@ type LlmCallResult = { message: ChatMessage };
 type ProtocolCaller = (opts: RunOptions) => Promise<LlmCallResult>;
 
 const PROTOCOL_CALLERS: Record<LlmProtocol, ProtocolCaller> = {
-  openai: callOpenAICompatible,
-  anthropic: callMessagesCompatible,
+  openai: callChatCompletionsProtocol,
+  anthropic: callMessagesProtocol,
 };
 
 // FNV-1a (32-bit), returned as zero-padded base36 so the discriminator is a
@@ -181,7 +181,9 @@ function buildToolDefs(tools: McpTool[], protocol: "openai" | "anthropic") {
   }));
 }
 
-async function callOpenAICompatible(opts: RunOptions): Promise<LlmCallResult> {
+async function callChatCompletionsProtocol(
+  opts: RunOptions,
+): Promise<LlmCallResult> {
   const oaiMessages: unknown[] = [];
   if (opts.systemPrompt)
     oaiMessages.push({ role: "system", content: opts.systemPrompt });
@@ -254,7 +256,7 @@ async function callOpenAICompatible(opts: RunOptions): Promise<LlmCallResult> {
   return { message };
 }
 
-async function callMessagesCompatible(
+async function callMessagesProtocol(
   opts: RunOptions,
 ): Promise<LlmCallResult> {
   const aMessages: unknown[] = [];
