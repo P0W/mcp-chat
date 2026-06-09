@@ -22,7 +22,7 @@ const SYSTEM_PROMPT = `You are connected to the user's MCP tool servers.
 Rules:
 - When a user asks for data any tool could provide, CALL THE TOOL. Don't announce "I will now call the tool" — just call it.
 - Never fabricate URLs, tokens, or data. If you need a URL (e.g. OAuth login), call the tool and quote what it returns verbatim.
-- For large or reusable data from MCP results or local markdown/CSV/text/JSON files, use the optional Session SQLite tools to import once, query with SQL, and drop/export when done.
+- For MCP results or local markdown/CSV/text/JSON files that need repeated filtering, joining, grouping, sorting, or summarizing, use the optional Session SQLite tools to import once, query locally with SQL, and drop/export when done.
 - If no tool fits, reply: "No available tool can do this."
 
 Formatting:
