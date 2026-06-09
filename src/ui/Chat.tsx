@@ -276,9 +276,10 @@ export default function Chat({
       runningRef.current = false;
       setBusy(false);
       const continueWith = drainQueuedMessages();
-      if (!continueWith.length) {
+      if (!continueWith.length && chatRef.current?.id === chatId) {
         if (controller.signal.aborted) setResponseState("stopped");
         else if (!failed) setResponseState("complete");
+        else setResponseState("idle");
       }
       if (continueWith.length) void runConversation(continueWith);
     }
@@ -357,6 +358,7 @@ export default function Chat({
               onClick={() => {
                 stop();
                 setActiveChat(h);
+                setResponseState("idle");
                 setShowHistory(false);
               }}
             >
