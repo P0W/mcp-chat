@@ -152,6 +152,10 @@ export async function runChat(opts: RunOptions): Promise<void> {
     }
     if (canContinue) appendQueuedMessages(opts);
   }
+
+  throw new Error(
+    `Response stopped: reached maximum tool iterations (${max}).`,
+  );
 }
 
 function appendQueuedMessages(opts: RunOptions): boolean {
