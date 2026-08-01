@@ -270,20 +270,26 @@ async function callChatCompletionsProtocol(
 async function callMessagesApiProtocol(
   opts: RunOptions,
 ): Promise<LlmCallResult> {
-  const aMessages: unknown[] = [];
+  const aMessages: { role: "user" | "assistant"; content: unknown[] }[] = [];
+  const pushAnthropic = (role: "user" | "assistant", content: unknown[]) => {
+    const last = aMessages[aMessages.length - 1];
+    if (last?.role === role) {
+      last.content.push(...content);
+      return;
+    }
+    aMessages.push({ role, content: [...content] });
+  };
+
   for (const m of opts.messages) {
     if (m.role === "system") continue;
     if (m.role === "tool") {
-      aMessages.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: m.toolCallId,
-            content: m.content,
-          },
-        ],
-      });
+      pushAnthropic("user", [
+        {
+          type: "tool_result",
+          tool_use_id: m.toolCallId,
+          content: m.content,
+        },
+      ]);
     } else if (m.role === "assistant" && m.toolCalls?.length) {
       const parts: unknown[] = [];
       if (m.content) parts.push({ type: "text", text: m.content });
@@ -294,9 +300,10 @@ async function callMessagesApiProtocol(
           name: tc.name,
           input: tc.args ?? {},
         });
-      aMessages.push({ role: "assistant", content: parts });
+      pushAnthropic("assistant", parts);
     } else if (m.role === "user" || m.role === "assistant") {
-      aMessages.push({ role: m.role, content: m.content });
+      if (!m.content) continue;
+      pushAnthropic(m.role, [{ type: "text", text: m.content }]);
     }
   }
 
