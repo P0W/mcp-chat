@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Chats, Mcps, Meta, Providers, uid } from "../db";
-import { runChat, type CompactInfo } from "../llm";
+import {
+  MaxToolIterationsError,
+  runChat,
+  type CompactInfo,
+} from "../llm";
 import { callTool, connect, listLoadedTools } from "../mcp";
 import { LOCAL_SERVER_ID, callLocalTool, localTools } from "../localTools";
 import {
@@ -37,6 +41,7 @@ const isNative = () => Capacitor.isNativePlatform();
 const IS_NATIVE = isNative();
 const DATA_SHAPING_PATTERN =
   /\b(filter|group(?:\s+by)?|sort|order(?:\s+by)?|rank|top|bottom|aggregate|sum|avg|count|join|table|rows|csv|json|markdown|summari[sz]e|analy[sz]e|compare)\b/i;
+const AUTO_CONTINUE_LIMIT = 3;
 
 // Route a tool call to the local built-in tools or the matching MCP server.
 const runToolCall = (
@@ -231,6 +236,7 @@ export default function Chat({
     abortRef.current = controller;
     let pending = initialMessages;
     let failed = false;
+    let autoContinues = 0;
 
     try {
       while (pending.length) {
@@ -238,19 +244,36 @@ export default function Chat({
         const current = chatRef.current;
         if (!current || current.id !== chatId) return;
         const working = [...current.messages];
-        await runChat({
-          provider,
-          systemPrompt: `${SYSTEM_PROMPT}${toolRoutingHint(working, tools)}`,
-          messages: working,
-          tools,
-          runner: { call: runToolCall },
-          signal: controller.signal,
-          drainQueuedMessages,
-          onQueuedMessages: (messages) => appendMessagesToChat(chatId, messages),
-          onAssistant: (m) => appendMessagesToChat(chatId, [m]),
-          onToolResult: (m) => appendMessagesToChat(chatId, [m]),
-          onCompact: setCompact,
-        });
+        try {
+          await runChat({
+            provider,
+            systemPrompt: `${SYSTEM_PROMPT}${toolRoutingHint(working, tools)}`,
+            messages: working,
+            tools,
+            runner: { call: runToolCall },
+            signal: controller.signal,
+            drainQueuedMessages,
+            onQueuedMessages: (messages) => appendMessagesToChat(chatId, messages),
+            onAssistant: (m) => appendMessagesToChat(chatId, [m]),
+            onToolResult: (m) => appendMessagesToChat(chatId, [m]),
+            onCompact: setCompact,
+          });
+          autoContinues = 0;
+        } catch (e) {
+          if (e instanceof MaxToolIterationsError && autoContinues < AUTO_CONTINUE_LIMIT) {
+            autoContinues++;
+            pending = [
+              {
+                id: uid(),
+                role: "user",
+                content: "continue",
+                createdAt: Date.now(),
+              },
+            ];
+            continue;
+          }
+          throw e;
+        }
 
         const finalChat = chatRef.current;
         if (finalChat?.id === chatId) {
