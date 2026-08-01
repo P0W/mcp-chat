@@ -237,10 +237,19 @@ export default function Chat({
     let pending = initialMessages;
     let failed = false;
     let autoContinues = 0;
+    let forceContinue = false;
+
+    const persistActiveChat = async () => {
+      const latest = chatRef.current;
+      if (latest?.id !== chatId) return;
+      await Chats.put(latest);
+      await Meta.set("lastChatId", latest.id);
+      setHistory(await Chats.list());
+    };
 
     try {
-      while (pending.length) {
-        appendMessagesToChat(chatId, pending);
+      while (pending.length || forceContinue) {
+        if (pending.length) appendMessagesToChat(chatId, pending);
         const current = chatRef.current;
         if (!current || current.id !== chatId) return;
         const working = [...current.messages];
@@ -262,26 +271,16 @@ export default function Chat({
         } catch (e) {
           if (e instanceof MaxToolIterationsError && autoContinues < AUTO_CONTINUE_LIMIT) {
             autoContinues++;
-            pending = [
-              {
-                id: uid(),
-                role: "user",
-                content: "continue",
-                createdAt: Date.now(),
-              },
-            ];
+            await persistActiveChat();
+            pending = drainQueuedMessages();
+            forceContinue = pending.length === 0;
             continue;
           }
           throw e;
         }
-
-        const finalChat = chatRef.current;
-        if (finalChat?.id === chatId) {
-          await Chats.put(finalChat);
-          await Meta.set("lastChatId", finalChat.id);
-        }
-        setHistory(await Chats.list());
+        await persistActiveChat();
         pending = drainQueuedMessages();
+        forceContinue = false;
       }
     } catch (e) {
       failed = true;
