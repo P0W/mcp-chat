@@ -238,6 +238,7 @@ export default function Chat({
     let failed = false;
     let autoContinues = 0;
     let forceContinue = false;
+    let iterCapExhausted = false;
 
     const persistActiveChat = async () => {
       const latest = chatRef.current;
@@ -284,6 +285,7 @@ export default function Chat({
       }
     } catch (e) {
       failed = true;
+      if (e instanceof MaxToolIterationsError) iterCapExhausted = true;
       const msg = (e as Error).message;
       if (!controller.signal.aborted) setError(msg);
     } finally {
@@ -301,6 +303,7 @@ export default function Chat({
       if (!continueWith.length && chatRef.current?.id === chatId) {
         if (controller.signal.aborted) setResponseState("stopped");
         else if (!failed) setResponseState("complete");
+        else if (iterCapExhausted) setResponseState("stopped");
         else setResponseState("idle");
       }
       if (continueWith.length) void runConversation(continueWith);
