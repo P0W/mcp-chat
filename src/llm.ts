@@ -37,6 +37,13 @@ export interface CompactInfo {
   elided: number;
 }
 
+export class MaxToolIterationsError extends Error {
+  constructor(max: number) {
+    super(`Response stopped: reached maximum tool iterations (${max}).`);
+    this.name = "MaxToolIterationsError";
+  }
+}
+
 // Conservative input budget — leaves output headroom without capping responses.
 // Per-provider override later via provider.contextLimit if needed.
 const DEFAULT_BUDGET_TOKENS = 24_000;
@@ -153,9 +160,7 @@ export async function runChat(opts: RunOptions): Promise<void> {
     if (canContinue) appendQueuedMessages(opts);
   }
 
-  throw new Error(
-    `Response stopped: reached maximum tool iterations (${max}).`,
-  );
+  throw new MaxToolIterationsError(max);
 }
 
 function appendQueuedMessages(opts: RunOptions): boolean {
