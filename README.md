@@ -20,6 +20,9 @@ Designed for Pixel 10a but should work on any Android 7+ device.
 - **Session SQLite**: optional in-memory SQLite tools let chats import MCP
   output or local markdown/CSV/text/JSON file contents, run joins, groups,
   sorts, and other SQL locally, then drop or export the database when done.
+- **File attachments**: attach images and documents from the device (paperclip
+  button or drag and drop) and preview them before sending. See
+  [Attachments](#attachments).
 - **On-device only**: provider keys, MCP configs, and chats live in IndexedDB
   on your phone. Nothing is sent anywhere except the LLM and MCP servers you
   configured.
@@ -29,7 +32,94 @@ Designed for Pixel 10a but should work on any Android 7+ device.
 ```bash
 npm install
 npm run dev          # browser preview at http://localhost:5173
+npm test             # vitest unit tests
+npm run build        # typecheck + production build
 ```
+
+## Attachments
+
+Use the paperclip button next to the message box (or drop files on the
+composer) to attach files. Each file is checked, parsed on the device, and
+shown in a tray above the input with a thumbnail or icon, its type and size,
+and a remove button. Send stays disabled while files are being processed.
+
+**Supported formats**
+
+| Kind      | Extensions                                   | Sent as                                   |
+| --------- | -------------------------------------------- | ----------------------------------------- |
+| Images    | .jpg .jpeg .png .gif .webp .bmp              | image input (vision models)               |
+| SVG       | .svg                                         | markup as text, never rendered            |
+| PDF       | .pdf                                         | native PDF input or extracted text        |
+| Office    | .docx .pptx .xlsx                            | extracted text (slides and sheets headed) |
+| Text      | .txt .md .csv                                | text                                      |
+
+Every file must have a supported extension. The declared MIME type must agree
+with it, and the file contents must pass a signature check (magic bytes, zip
+layout for Office files, UTF-8 for text). Files that fail are rejected with a
+message saying why. Legacy `.doc`, `.xls`, and `.ppt` files are not supported.
+
+**Limits** (defaults; override at build time with env vars)
+
+| Limit                     | Default     | Env var                          |
+| ------------------------- | ----------- | -------------------------------- |
+| Size per file             | 10 MB       | `VITE_ATTACHMENT_MAX_FILE_MB`    |
+| Files per message         | 5           | `VITE_ATTACHMENT_MAX_FILES`      |
+| Total size per message    | 20 MB       | `VITE_ATTACHMENT_MAX_TOTAL_MB`   |
+| Extracted text per file   | 100k chars  | `VITE_ATTACHMENT_MAX_TEXT_CHARS` |
+
+Images larger than 2048 px are scaled down, and images still larger than
+3.75 MB are re-encoded as JPEG so they fit provider limits. BMP is converted to
+PNG. Office archives are capped at 50 MB uncompressed to guard against zip
+bombs. Longer extracted text is truncated and the model is told.
+
+**Provider support**
+
+Each provider has an **Attachments** setting (Providers tab):
+
+- `auto` (default) guesses from the provider and model. Claude gets images and
+  native PDFs. OpenAI (api.openai.com) gets images and PDFs when the model looks
+  vision-capable. OpenRouter gets images and PDFs. Gemini gets images, with PDFs
+  sent as text. Other OpenAI-compatible endpoints get images only when the model
+  name looks vision-capable. Models that look text-only (for example
+  `deepseek-chat`, `o1-mini`) get text only.
+- `text`, `images`, `images+pdf` force a mode when the guess is wrong.
+
+When a model can't take a file natively, the app falls back gracefully:
+PDFs are sent as extracted text, and images are replaced by a short note
+telling the model an image was attached but can't be shown. The tray shows
+how each file will be sent. Scanned PDFs without a text layer only work with
+native PDF input. Excel dates are sent as serial numbers.
+
+**Architecture**
+
+There is no app server. Files are read in the WebView and sent straight to your
+configured provider as part of the chat request, then kept with the chat in
+on-device IndexedDB. Nothing is uploaded anywhere else. The limits are checked
+twice: when files are added, and again when the request is built
+(`buildUserParts`), so oversized payloads never leave the device.
+
+```
+src/attachments/
+  types.ts         attachment, limit, and capability types
+  limits.ts        default limits + env overrides
+  formats.ts       format registry (extensions, MIME types, signatures)
+  validate.ts      filename sanitizing, MIME/extension/content checks
+  encoding.ts      base64 and strict UTF-8 decoding
+  ooxml.ts         bounded unzip + docx/pptx/xlsx text extraction
+  pdf.ts           lazy-loaded pdf.js text extraction
+  image.ts         decode check, resize, BMP to PNG
+  process.ts       File -> ChatAttachment pipeline
+  capabilities.ts  per-provider/model attachment support
+  transport.ts     OpenAI / Anthropic content-part serialization
+  queue.ts         composer attachment state (framework free)
+  useAttachmentQueue.ts  React binding
+src/ui/Attachments.tsx   attach button, drop zone, tray, message chips
+```
+
+Security notes: filenames are sanitized before display or sending, SVGs are
+never rendered, previews use object URLs that are revoked on removal or send,
+file contents are never logged, and pdf.js runs with eval and font loading
+turned off.
 
 ## Build Android APK
 
@@ -102,11 +192,13 @@ src/
   llm.ts          provider-agnostic LLM with tool-call loop
   mcp.ts          Streamable HTTP MCP client + OAuth (PKCE + DCR)
   sessionSqlTools.ts optional in-memory SQLite data tools
+  attachments/    file attachment validation, parsing, serialization
   App.tsx         tab router
   main.tsx        React entry
   index.css       Tailwind + small markdown styles
   ui/
     Chat.tsx
+    Attachments.tsx attach button, drop zone, attachment tray
     Providers.tsx
     McpServers.tsx
     Markdown.tsx

@@ -5,6 +5,13 @@ import type {
   ProviderConfig,
   ToolCall,
 } from "./types";
+import {
+  buildUserParts,
+  estimateAttachmentChars,
+  resolveAttachmentCapabilities,
+  toAnthropicContent,
+  toOpenAIContent,
+} from "./attachments";
 
 export interface ToolRunner {
   call(
@@ -193,6 +200,7 @@ async function callChatCompletionsProtocol(
   opts: RunOptions,
 ): Promise<LlmCallResult> {
   const oaiMessages: unknown[] = [];
+  const caps = resolveAttachmentCapabilities(opts.provider);
   if (opts.systemPrompt)
     oaiMessages.push({ role: "system", content: opts.systemPrompt });
 
@@ -212,6 +220,11 @@ async function callChatCompletionsProtocol(
           type: "function",
           function: { name: tc.name, arguments: JSON.stringify(tc.args ?? {}) },
         })),
+      });
+    } else if (m.role === "user" && m.attachments?.length) {
+      oaiMessages.push({
+        role: "user",
+        content: toOpenAIContent(buildUserParts(m, caps)),
       });
     } else if (m.role === "user" || m.role === "assistant") {
       oaiMessages.push({ role: m.role, content: m.content });
@@ -279,6 +292,7 @@ async function callMessagesApiProtocol(
     }
     aMessages.push({ role, content: [...content] });
   };
+  const caps = resolveAttachmentCapabilities(opts.provider);
 
   for (const m of opts.messages) {
     if (m.role === "system") continue;
@@ -301,6 +315,8 @@ async function callMessagesApiProtocol(
           input: tc.args ?? {},
         });
       pushAnthropic("assistant", parts);
+    } else if (m.role === "user" && m.attachments?.length) {
+      pushAnthropic("user", toAnthropicContent(buildUserParts(m, caps)));
     } else if (m.role === "user" || m.role === "assistant") {
       if (!m.content) continue;
       pushAnthropic(m.role, [{ type: "text", text: m.content }]);
@@ -365,7 +381,7 @@ function outputWithTruncationNotice(content: string, truncated: boolean): string
 // ---------------- Token-aware history compaction ----------------
 
 function approxBytes(m: ChatMessage): number {
-  let size = m.content.length + 32;
+  let size = m.content.length + 32 + estimateAttachmentChars(m.attachments);
   if (m.toolCalls) {
     for (const tc of m.toolCalls) {
       size +=

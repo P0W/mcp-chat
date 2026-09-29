@@ -1,3 +1,5 @@
+import type { AttachmentInputMode, ChatAttachment } from "./attachments/types";
+
 export type LlmProtocol = "openai" | "anthropic";
 
 export interface ProviderConfig {
@@ -8,6 +10,8 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   extraHeaders?: Record<string, string>;
+  /** Which attachment content the model accepts; defaults to "auto". */
+  attachmentInput?: AttachmentInputMode;
 }
 
 export type McpAuthMode = "none" | "bearer" | "oauth";
@@ -49,6 +53,8 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   toolName?: string;
+  /** Files attached to a user message. */
+  attachments?: ChatAttachment[];
   createdAt: number;
 }
 
