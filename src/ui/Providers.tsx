@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Providers as Db, uid } from "../db";
 import type { LlmProtocol, ProviderConfig } from "../types";
+import type { AttachmentInputMode } from "../attachments";
 
 const PRESETS: {
   name: string;
@@ -124,6 +125,26 @@ export default function Providers({ onChange }: { onChange: () => void }) {
           value={editing.model}
           onChange={(e) => setEditing({ ...editing, model: e.target.value })}
         />
+
+        <label className="label" htmlFor="provider-attachment-input">
+          Attachments
+        </label>
+        <select
+          id="provider-attachment-input"
+          className="input"
+          value={editing.attachmentInput ?? "auto"}
+          onChange={(e) =>
+            setEditing({
+              ...editing,
+              attachmentInput: e.target.value as AttachmentInputMode,
+            })
+          }
+        >
+          <option value="auto">Auto-detect from provider and model</option>
+          <option value="text">Text only (documents as extracted text)</option>
+          <option value="images">Images + extracted text</option>
+          <option value="images+pdf">Images + native PDF</option>
+        </select>
 
         <label className="label">API key</label>
         <input

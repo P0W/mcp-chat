@@ -20,6 +20,16 @@ import type {
   ProviderConfig,
 } from "../types";
 import Markdown from "./Markdown";
+import {
+  resolveAttachmentCapabilities,
+  useAttachmentQueue,
+} from "../attachments";
+import {
+  AttachButton,
+  AttachmentTray,
+  MessageAttachments,
+  useFileDrop,
+} from "./Attachments";
 
 const SYSTEM_PROMPT = `You are connected to the user's MCP tool servers.
 
@@ -107,6 +117,10 @@ export default function Chat({
   const chatRef = useRef<ChatT | null>(null);
   const queuedRef = useRef<ChatMessage[]>([]);
   const runningRef = useRef(false);
+  const { queue: attachmentQueue, state: attachments } = useAttachmentQueue();
+  const attachButtonRef = useRef<HTMLButtonElement>(null);
+  const addFiles = (files: File[]) => void attachmentQueue.addFiles(files);
+  const fileDrop = useFileDrop(addFiles);
 
   function setActiveChat(next: ChatT | null) {
     chatRef.current = next;
@@ -120,7 +134,7 @@ export default function Chat({
       messages: [...base.messages, ...messages],
       title:
         base.messages.length === 0 && firstUser
-          ? firstUser.content.slice(0, 40)
+          ? (firstUser.content || firstUser.attachments?.[0]?.name || "New chat").slice(0, 40)
           : base.title,
       updatedAt: Date.now(),
     };
@@ -198,13 +212,17 @@ export default function Chat({
   async function send() {
     const content = input.trim();
     const activeChat = chatRef.current;
-    if (!content || !activeChat) return;
+    if (!activeChat || attachmentQueue.getState().processing) return;
+    if (!content && !attachmentQueue.getState().items.length) return;
+    const files = attachmentQueue.takeReady();
+    if (!files || (!content && !files.length)) return;
 
     const userMsg: ChatMessage = {
       id: uid(),
       role: "user",
       content,
       createdAt: Date.now(),
+      ...(files.length ? { attachments: files } : {}),
     };
     setInput("");
     setError(null);
@@ -331,6 +349,20 @@ export default function Chat({
     setError(null);
     setResponseState("idle");
   }
+
+  const activeProvider = providers.find((p) => p.id === chat?.providerId);
+  const attachmentCaps = activeProvider
+    ? resolveAttachmentCapabilities(activeProvider)
+    : { images: false, pdf: false };
+  const canSend =
+    !!chat &&
+    !attachments.processing &&
+    (!!input.trim() || attachments.items.length > 0);
+  const sendLabel = attachments.processing
+    ? "Waiting for attachments to finish processing"
+    : busy
+      ? "Queue message"
+      : "Send message";
 
   if (!hasProvider) {
     return (
@@ -490,8 +522,26 @@ export default function Chat({
         )}
       </div>
 
-      <div className="border-t border-neutral-800 p-3 bg-neutral-950">
+      <div
+        className={`border-t p-3 bg-neutral-950 ${
+          fileDrop.dragging ? "border-indigo-500" : "border-neutral-800"
+        }`}
+        {...fileDrop.props}
+      >
+        {fileDrop.dragging && (
+          <div className="mb-2 rounded-xl border border-dashed border-indigo-500 bg-indigo-950/30 p-3 text-center text-xs text-indigo-200">
+            Drop files to attach
+          </div>
+        )}
+        <AttachmentTray
+          state={attachments}
+          caps={attachmentCaps}
+          onRemove={(id) => attachmentQueue.remove(id)}
+          onDismissError={(id) => attachmentQueue.dismissError(id)}
+          onEmpty={() => attachButtonRef.current?.focus()}
+        />
         <div className="flex items-end gap-2">
+          <AttachButton ref={attachButtonRef} onFiles={addFiles} />
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -515,9 +565,9 @@ export default function Chat({
           )}
           <button
             className="btn btn-primary aspect-square px-2.5"
-            disabled={!input.trim() || !chat}
-            aria-label={busy ? "Queue message" : "Send message"}
-            title={busy ? "Queue message" : "Send message"}
+            disabled={!canSend}
+            aria-label={sendLabel}
+            title={sendLabel}
             onClick={() => void send()}
           >
             <ArrowUpIcon />
@@ -532,8 +582,15 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2 text-sm whitespace-pre-wrap">
-          {msg.content}
+        <div className="flex max-w-[85%] flex-col items-end">
+          {msg.attachments?.length ? (
+            <MessageAttachments attachments={msg.attachments} />
+          ) : null}
+          {msg.content && (
+            <div className="rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2 text-sm whitespace-pre-wrap">
+              {msg.content}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -577,6 +634,9 @@ function QueuedMessage({ msg }: { msg: ChatMessage }) {
         <div className="mb-1 text-[10px] uppercase tracking-wide text-indigo-100/80">
           queued
         </div>
+        {msg.attachments?.length ? (
+          <MessageAttachments attachments={msg.attachments} />
+        ) : null}
         {msg.content}
       </div>
     </div>
